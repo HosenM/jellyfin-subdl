@@ -1,0 +1,23 @@
+[
+  {
+    "guid": "780885a1-46b9-4ba0-a3c8-d18ad7fe81b6",
+    "name": "SubDL",
+    "description": "Downloads Persian (FA) subtitles from subdl.com.",
+    "overview": "Persian subtitles from SubDL",
+    "owner": "HosenM",
+    "category": "Subtitles",
+    "imageUrl": "",
+    "versions": [
+      {
+        "version": "1.0.0.0",
+        "changelog": "Release 1.0.0.0",
+        "targetAbi": "12.2.0.0",
+        "sourceUrl": "https://github.com/HosenM/jellyfin-subdl/releases/download/v1.0.0.0/subdl_1.0.0.0.zip",
+        "checksum": "02820bfa6f792bdc65cf3b89abd1220c",
+        "timestamp": "2026-10-16T18:16:34.0000000Z",
+        "repositoryName": "SubDL",
+        "repositoryUrl": "https://github.com/HosenM/jellyfin-subdl"
+      }
+    ]
+  }
+]
