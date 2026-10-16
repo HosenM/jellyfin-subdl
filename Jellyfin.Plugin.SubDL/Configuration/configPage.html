@@ -25,6 +25,14 @@
                             Set that order under the library's subtitle settings. Leave empty to disable it.
                         </div>
                     </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="ArchivePath">Subtitle archive path</label>
+                        <input id="ArchivePath" name="ArchivePath" type="text" is="emby-input" />
+                        <div class="fieldDescription">
+                            Where orphaned subtitle files are moved to. Must be a path this Jellyfin
+                            instance can write to.
+                        </div>
+                    </div>
                     <br />
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
@@ -59,6 +67,23 @@
                 <div class="verticalSection">
                     <h2 class="sectionTitle">Library settings</h2>
                     <div id="SubDLLibraries" class="fieldDescription">Checking&hellip;</div>
+                </div>
+
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Orphaned subtitles</h2>
+                    <div class="fieldDescription">
+                        Subtitle files left behind in a library folder after their video was deleted.
+                        Scanning changes nothing &mdash; files only move when you press Archive, and an
+                        existing file at the destination is never overwritten.
+                    </div>
+                    <div id="SubDLOrphans" class="fieldDescription" style="margin-top:1em;">Not scanned yet.</div>
+                    <br />
+                    <button is="emby-button" type="button" id="SubDLScan" class="raised emby-button">
+                        <span>Scan</span>
+                    </button>
+                    <button is="emby-button" type="button" id="SubDLArchive" class="raised button-submit emby-button" disabled>
+                        <span>Archive</span>
+                    </button>
                 </div>
 
                 <div class="verticalSection">
@@ -259,11 +284,94 @@
                 });
             }
 
+            function renderOrphanReport(report) {
+                var el = document.querySelector('#SubDLOrphans');
+                var button = document.querySelector('#SubDLArchive');
+                el.innerHTML = '';
+                button.disabled = true;
+                button.querySelector('span').textContent = 'Archive';
+
+                if (report.Error) {
+                    el.textContent = 'Scan failed: ' + report.Error;
+                    return;
+                }
+
+                if (!report.ArchivePath) {
+                    el.textContent = 'Set an archive path above and save before archiving.';
+                    return;
+                }
+
+                var header = document.createElement('div');
+                header.textContent = report.Count + ' orphaned subtitle(s) found across '
+                    + (report.Locations || []).length + ' library folder(s).';
+                el.appendChild(header);
+
+                (report.Orphans || []).forEach(function (path) {
+                    var div = document.createElement('div');
+                    div.textContent = '\u00A0\u00A0' + path;
+                    el.appendChild(div);
+                });
+
+                if (report.Count > (report.Orphans || []).length) {
+                    var more = document.createElement('div');
+                    more.textContent = '\u00A0\u00A0\u2026and ' + (report.Count - report.Orphans.length) + ' more.';
+                    el.appendChild(more);
+                }
+
+                if (report.Count > 0) {
+                    button.disabled = false;
+                    button.querySelector('span').textContent = 'Archive ' + report.Count + ' file(s)';
+                }
+            }
+
+            function scanOrphans() {
+                setText('SubDLOrphans', 'Scanning\u2026');
+                ApiClient.ajax({
+                    type: 'GET',
+                    url: ApiClient.getUrl('SubDL/Orphans'),
+                    dataType: 'json'
+                }).then(renderOrphanReport, function () {
+                    setText('SubDLOrphans', 'Scan request failed.');
+                });
+            }
+
+            function archiveOrphans() {
+                setText('SubDLOrphans', 'Archiving\u2026');
+                ApiClient.ajax({
+                    type: 'POST',
+                    url: ApiClient.getUrl('SubDL/Orphans/Archive'),
+                    contentType: 'application/json',
+                    data: '{}',
+                    dataType: 'json'
+                }).then(function (report) {
+                    var el = document.querySelector('#SubDLOrphans');
+                    var button = document.querySelector('#SubDLArchive');
+                    el.innerHTML = '';
+                    button.disabled = true;
+                    button.querySelector('span').textContent = 'Archive';
+
+                    var first = document.createElement('div');
+                    first.textContent = report.Error
+                        ? 'Archive failed: ' + report.Error
+                        : 'Moved ' + report.Moved + ' file(s)' + (report.Failed ? ', ' + report.Failed + ' failed' : '') + '.';
+                    el.appendChild(first);
+
+                    (report.Errors || []).forEach(function (line) {
+                        var div = document.createElement('div');
+                        div.textContent = '\u00A0\u00A0' + line;
+                        el.appendChild(div);
+                    });
+                }, function () {
+                    setText('SubDLOrphans', 'Archive request failed.');
+                });
+            }
+
             document.querySelector('#SubDLConfigPage').addEventListener('pageshow', function () {
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(SubDLPlugin.pluginUniqueId).then(function (config) {
                     document.querySelector('#ApiKey').value = config.ApiKey || '';
                     document.querySelector('#SubSourceApiKey').value = config.SubSourceApiKey || '';
+                    document.querySelector('#ArchivePath').value = config.ArchivePath || '';
                     Dashboard.hideLoadingMsg();
                     loadSubDLStatus();
                     refreshTask();
@@ -273,6 +381,8 @@
 
             document.querySelector('#SubDLRefresh').addEventListener('click', loadSubDLStatus);
             document.querySelector('#SubDLRunNow').addEventListener('click', runNow);
+            document.querySelector('#SubDLScan').addEventListener('click', scanOrphans);
+            document.querySelector('#SubDLArchive').addEventListener('click', archiveOrphans);
 
             document.querySelector('#SubDLConfigForm').addEventListener('submit', function (e) {
                 e.preventDefault();
@@ -280,6 +390,7 @@
                 ApiClient.getPluginConfiguration(SubDLPlugin.pluginUniqueId).then(function (config) {
                     config.ApiKey = document.querySelector('#ApiKey').value.trim();
                     config.SubSourceApiKey = document.querySelector('#SubSourceApiKey').value.trim();
+                    config.ArchivePath = document.querySelector('#ArchivePath').value.trim();
                     ApiClient.updatePluginConfiguration(SubDLPlugin.pluginUniqueId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);
                         loadSubDLStatus();

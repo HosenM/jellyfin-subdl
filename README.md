@@ -62,6 +62,26 @@ search logs a line like:
 [INF] Jellyfin.Plugin.SubDL.Providers.SubdlSubtitleProvider: SubDL: 2 Persian subtitle(s) for Anora.2024.2160p.AMZN.WEB-DL.DDP5.1.H.265-FLUX.mkv
 ```
 
+## Archiving orphaned subtitles
+
+When you delete a film, rippers and scrapers often leave its subtitle behind. The plugin page has
+an **Orphaned subtitles** section that finds those files and moves them out of the library.
+
+- **Scan** walks every library folder for subtitle files (`.srt`, `.ass`, `.ssa`, `.vtt`, `.sub`)
+  and lists the ones with no video beside them. It changes nothing.
+- **Archive** moves exactly what the scan found into the configured **subtitle archive path** and
+  reports what moved. It will not overwrite a file already in the archive; a clash gets a
+  `.1`, `.2` suffix.
+
+A subtitle counts as orphaned when no video file in the same folder has the same name once
+language and flag tags are peeled off, so `Movie.2024.Group.fa.srt` and
+`Movie.2024.Group.en.forced.srt` both match `Movie.2024.Group.mkv`. If a video was *renamed* rather
+than deleted, its subtitle looks orphaned and will be archived — which is why the scan shows you
+the list before anything moves.
+
+Library folders that sit inside one another are scanned once, so a nested library is not processed
+twice.
+
 ## API quota
 
 A free SubDL key allows 2,000 searches and 50 downloads per day. The plugin makes one

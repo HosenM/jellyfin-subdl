@@ -119,6 +119,31 @@ title/year matching all work. They also caught one wrong assumption: `subtitleId
 `Cannot get the value of a token type 'Number' as a string` and the provider returned nothing,
 which is exactly what the per-provider error logging surfaced. Fixed in 1.1.0.1.
 
+## 1.2.0.0
+
+Added orphaned subtitle archiving: `GET /SubDL/Orphans` lists subtitle files in the library folders
+whose video is gone, and `POST /SubDL/Orphans/Archive` moves them to the configured
+`ArchivePath`. Both are behind `Policies.SubtitleManagement`, and the archive button only appears
+after a scan.
+
+Decisions worth keeping:
+
+- Archive is flat, per the user's choice, with a numeric suffix on name clashes rather than an
+  overwrite.
+- The move re-scans on the server instead of taking a file list from the client, so a stale or
+  hostile request cannot aim the move at an arbitrary file.
+- Library locations are collapsed so a nested library is not scanned twice.
+- Subtitle-to-video matching peels up to four trailing dot-separated tags rather than carrying a
+  language list, which handles `.fa.srt`, `.en.forced.srt` and friends without one.
+- The scan does its own directory walk so one unreadable folder cannot abort it, and skips reparse
+  points so a symlink loop cannot hang it.
+- Empty folders are left alone; only files move.
+
+Verified with a throwaway harness that compiles the archiver source directly and asserts against a
+fake tree: the three genuine orphans are found while tagged subtitles, nested libraries, duplicate
+locations and non-subtitle files are all handled correctly, and an existing file at the
+destination is preserved under a `.1` name.
+
 ## Left to the builder
 
 - Whether the `ThreeLetterISOLanguageName` should follow Jellyfin's own mapping rather than

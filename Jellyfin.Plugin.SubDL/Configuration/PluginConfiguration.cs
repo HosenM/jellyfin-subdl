@@ -17,4 +17,9 @@ public class PluginConfiguration : BasePluginConfiguration
     /// provider stays out of the way.
     /// </summary>
     public string SubSourceApiKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets where orphaned subtitle files are moved to.
+    /// </summary>
+    public string ArchivePath { get; set; } = string.Empty;
 }
