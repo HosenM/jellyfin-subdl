@@ -9,12 +9,12 @@
     "imageUrl": "",
     "versions": [
       {
-        "version": "1.1.0.0",
-        "changelog": "Release 1.1.0.0",
+        "version": "1.1.0.1",
+        "changelog": "Release 1.1.0.1",
         "targetAbi": "12.2.0.0",
-        "sourceUrl": "https://github.com/HosenM/jellyfin-subdl/releases/download/v1.1.0.0/subdl_1.1.0.0.zip",
-        "checksum": "9950bbeb4671d6ebc55d947d98b36acc",
-        "timestamp": "2026-10-16T19:01:18.0000000Z",
+        "sourceUrl": "https://github.com/HosenM/jellyfin-subdl/releases/download/v1.1.0.1/subdl_1.1.0.1.zip",
+        "checksum": "de0759cadff13fa234d34074b13630e4",
+        "timestamp": "2026-10-16T19:04:36.0000000Z",
         "repositoryName": "SubDL",
         "repositoryUrl": "https://github.com/HosenM/jellyfin-subdl"
       }
