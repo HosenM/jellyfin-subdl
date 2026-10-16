@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  PLUGIN_NAME: SubDL
+  PLUGIN_GUID: 780885a1-46b9-4ba0-a3c8-d18ad7fe81b6
+  TARGET_ABI: 12.2.0.0
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          dotnet build Jellyfin.Plugin.SubDL/Jellyfin.Plugin.SubDL.csproj \
+            -c Release -p:Version="$VERSION" -o build
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          STAMP="$(date -u +%Y-%m-%dT%H:%M:%S.0000000Z)"
+          mkdir -p package
+          cp build/Jellyfin.Plugin.SubDL.dll package/
+          cat > package/meta.json <<EOF
+          {
+            "category": "Subtitles",
+            "changelog": "Release ${VERSION}",
+            "description": "Downloads Persian (FA) subtitles from subdl.com.",
+            "guid": "${PLUGIN_GUID}",
+            "name": "${PLUGIN_NAME}",
+            "overview": "Persian subtitles from SubDL",
+            "owner": "HosenM",
+            "targetAbi": "${TARGET_ABI}",
+            "timestamp": "${STAMP}",
+            "version": "${VERSION}",
+            "status": "Active",
+            "autoUpdate": true,
+            "assemblies": []
+          }
+          EOF
+          (cd package && zip -qr "../subdl_${VERSION}.zip" .)
+          echo "CHECKSUM=$(md5sum "subdl_${VERSION}.zip" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "v${VERSION}" "subdl_${VERSION}.zip" \
+            --title "SubDL ${VERSION}" \
+            --notes "SubDL ${VERSION}"
+
+      - name: Update manifest
+        run: |
+          set -euo pipefail
+          cat > manifest.json <<EOF
+          [
+            {
+              "guid": "${PLUGIN_GUID}",
+              "name": "${PLUGIN_NAME}",
+              "description": "Downloads Persian (FA) subtitles from subdl.com.",
+              "overview": "Persian subtitles from SubDL",
+              "owner": "HosenM",
+              "category": "Subtitles",
+              "imageUrl": "",
+              "versions": [
+                {
+                  "version": "${VERSION}",
+                  "changelog": "Release ${VERSION}",
+                  "targetAbi": "${TARGET_ABI}",
+                  "sourceUrl": "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/subdl_${VERSION}.zip",
+                  "checksum": "${CHECKSUM}",
+                  "timestamp": "${STAMP}",
+                  "repositoryName": "${PLUGIN_NAME}",
+                  "repositoryUrl": "https://github.com/${GITHUB_REPOSITORY}"
+                }
+              ]
+            }
+          ]
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "Publish manifest for ${VERSION}"
+          git push origin HEAD:main

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>SubDL</title>
+</head>
+<body>
+    <div id="SubDLConfigPage" data-role="page" class="page type-interior pluginConfigurationPage">
+        <div data-role="content">
+            <div class="content-primary">
+                <form id="SubDLConfigForm">
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="ApiKey">SubDL API key</label>
+                        <input id="ApiKey" name="ApiKey" type="text" is="emby-input" />
+                        <div class="fieldDescription">
+                            Get one at subdl.com under your account. The free tier allows 2,000 searches and 50 downloads per day.
+                        </div>
+                    </div>
+                    <br />
+                    <div>
+                        <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                            <span>Save</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <script type="text/javascript">
+            var SubDLPlugin = {
+                pluginUniqueId: "780885a1-46b9-4ba0-a3c8-d18ad7fe81b6"
+            };
+
+            document.querySelector('#SubDLConfigPage').addEventListener('pageshow', function () {
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(SubDLPlugin.pluginUniqueId).then(function (config) {
+                    document.querySelector('#ApiKey').value = config.ApiKey || '';
+                    Dashboard.hideLoadingMsg();
+                });
+            });
+
+            document.querySelector('#SubDLConfigForm').addEventListener('submit', function (e) {
+                e.preventDefault();
+                Dashboard.showLoadingMsg();
+                ApiClient.getPluginConfiguration(SubDLPlugin.pluginUniqueId).then(function (config) {
+                    config.ApiKey = document.querySelector('#ApiKey').value.trim();
+                    ApiClient.updatePluginConfiguration(SubDLPlugin.pluginUniqueId, config).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                    });
+                });
+                return false;
+            });
+        </script>
+    </div>
+</body>
+</html>
