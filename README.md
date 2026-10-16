@@ -1,6 +1,7 @@
 # jellyfin-subdl
 
-A Jellyfin plugin that downloads Persian (FA) subtitles from [subdl.com](https://subdl.com).
+A Jellyfin plugin that downloads Persian (FA) subtitles from [subdl.com](https://subdl.com),
+with [subsource.net](https://subsource.net) as a second source behind it.
 
 ## Installation
 
@@ -13,7 +14,18 @@ A Jellyfin plugin that downloads Persian (FA) subtitles from [subdl.com](https:/
 2. Go to the **Catalog** tab, find **SubDL** and install it.
 3. Restart Jellyfin.
 4. Open **Dashboard → Plugins → SubDL** and paste your SubDL API key. Get one from your
-   [subdl.com](https://subdl.com) account settings.
+   [subdl.com](https://subdl.com) account settings. Optionally paste a subsource.net key too —
+   see below.
+
+## Two sources
+
+The plugin registers two subtitle providers, `SubDL` and `SubSource`. Jellyfin asks providers in
+its *Subtitle fetcher order* and **stops at the first one that returns results**, so SubDL first
+with SubSource second gives you fallback for free: SubSource is used when SubDL has no Persian
+subtitle for an item, or when its daily quota is spent. Set the order under
+**Edit library → Subtitles → Subtitle fetcher order**.
+
+Leave the SubSource key empty to disable that source entirely.
 
 ## Automatic subtitle downloads
 
@@ -55,6 +67,9 @@ search logs a line like:
 A free SubDL key allows 2,000 searches and 50 downloads per day. The plugin makes one
 search per item and one download per subtitle, so a backfill of a few hundred items takes several
 days; the scheduled task picks up where it left off on the next run.
+
+A subdl quota that runs out mid-run is not an error: SubDL reports nothing, Jellyfin moves on to
+SubSource, and the log shows the failed subdl call next to the successful SubSource one.
 
 ## How it works
 

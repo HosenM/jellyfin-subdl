@@ -8,7 +8,13 @@ namespace Jellyfin.Plugin.SubDL.Configuration;
 public class PluginConfiguration : BasePluginConfiguration
 {
     /// <summary>
-    /// Gets or sets the SubDL API key.
+    /// Gets or sets the subdl API key.
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the subsource.net API key. Optional; when empty the SubSource
+    /// provider stays out of the way.
+    /// </summary>
+    public string SubSourceApiKey { get; set; } = string.Empty;
 }

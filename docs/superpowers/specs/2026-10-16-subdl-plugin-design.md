@@ -93,6 +93,28 @@ faithful to Jellyfin's meaning, so the fix is to turn the library setting off, a
 so rather than silently returning nothing. OpenSubtitles solves the same problem by requiring an
 exact file-hash match, which subdl cannot offer.
 
+## 1.1.0.0
+
+Added `SubSourceSubtitleProvider`, a second provider backed by subsource.net, with its own API key
+on the config page.
+
+There is deliberately no fallback logic in the plugin. Jellyfin's automated downloader asks
+providers in `SubtitleFetcherOrder` and stops at the first that returns anything, which is exactly
+"use SubDL, fall through to SubSource when it has nothing or its quota is spent". The plugin
+registers SubDL first so that is the default order. A second provider also shows up separately in
+Jellyfin's manual search, and can be enabled or disabled on its own.
+
+The SubSource client is ported from Bazarr's `subliminal_patch` provider: title resolution through
+`/api/v1/movies/search` (`searchType=imdb` for films, a text search on the series name for
+episodes, since an episode's own IMDb id is not the series'), subtitles from `/api/v1/subtitles`
+with `language=farsi_persian`, and a zip from `/api/v1/subtitles/{id}/download`. Forced
+("foreign parts") entries are filtered out because they only cover the non-English dialogue.
+
+**Not verified against the live API.** The machine this was written on cannot resolve
+subsource.net (it answers with a private address) and connections to its Cloudflare addresses are
+reset, so the request shapes come from Bazarr rather than from an observed response. The first
+real search on a working network is the actual test.
+
 ## Left to the builder
 
 - Whether the `ThreeLetterISOLanguageName` should follow Jellyfin's own mapping rather than

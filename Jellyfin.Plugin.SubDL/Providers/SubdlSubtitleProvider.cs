@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MediaBrowser.Controller.Providers;
@@ -54,7 +53,7 @@ public class SubdlSubtitleProvider : ISubtitleProvider
             return [];
         }
 
-        if (!IsPersian(request))
+        if (!SubtitleHelpers.IsPersian(request))
         {
             return [];
         }
@@ -82,7 +81,7 @@ public class SubdlSubtitleProvider : ISubtitleProvider
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        var payload = await JsonSerializer.DeserializeAsync<SearchResponse>(stream, SubdlApi.JsonOptions, cancellationToken).ConfigureAwait(false);
+        var payload = await JsonSerializer.DeserializeAsync<SearchResponse>(stream, PluginHttp.JsonOptions, cancellationToken).ConfigureAwait(false);
         if (payload?.Subtitles is null)
         {
             _logger.LogInformation("SubDL: {File} returned no subtitles", fileName);
@@ -97,17 +96,7 @@ public class SubdlSubtitleProvider : ISubtitleProvider
             .OrderByDescending(i => i.MatchScore)
             .Select(i => new RemoteSubtitleInfo
             {
-                // Carries the episode and the exact language string Jellyfin asked for, so the
-                // right file can be picked out of a season pack and the saved file is named the
-                // way Jellyfin will look for it next time. Core only splits on its own md5 prefix,
-                // so these extra underscored fields survive the round trip.
-                Id = string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0}_{1}_{2}_{3}",
-                    NId(i.SubtitlePage),
-                    language,
-                    request.ParentIndexNumber?.ToString(CultureInfo.InvariantCulture) ?? "-",
-                    request.IndexNumber?.ToString(CultureInfo.InvariantCulture) ?? "-"),
+                Id = SubtitleHelpers.BuildId(NId(i.SubtitlePage)!, language, request.ParentIndexNumber, request.IndexNumber),
                 ProviderName = Name,
                 Name = i.ReleaseName ?? "SubDL",
                 Author = i.Author,
@@ -135,94 +124,39 @@ public class SubdlSubtitleProvider : ISubtitleProvider
         }
 
         var parts = id.Split('_', 4);
-        var language = parts.Length > 1 && parts[1].Length > 0 ? parts[1] : "fa";
-        var season = ParseIndex(parts, 2);
-        var episode = ParseIndex(parts, 3);
+        var language = SubtitleHelpers.ParseLanguage(parts);
+        var season = SubtitleHelpers.ParseIndex(parts, 2);
+        var episode = SubtitleHelpers.ParseIndex(parts, 3);
 
-        var url = string.Format(CultureInfo.InvariantCulture, "{0}/api/v2/subtitles/{1}/download?format=zip", SubdlApi.BaseUrl, parts[0]);
+        var url = string.Format(
+            CultureInfo.InvariantCulture,
+            "{0}/api/v2/subtitles/{1}/download?format=zip",
+            SubdlApi.BaseUrl,
+            parts[0]);
 
         using var response = await SendAsync(url, apiKey, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             var body = await SafeBody(response, cancellationToken).ConfigureAwait(false);
             _logger.LogWarning("SubDL: download {Id} failed with {Status}: {Body}", parts[0], (int)response.StatusCode, body);
-            throw new HttpRequestException(string.Format(CultureInfo.InvariantCulture, "SubDL download failed with {0}: {1}", (int)response.StatusCode, body));
+            throw new HttpRequestException(string.Format(
+                CultureInfo.InvariantCulture,
+                "SubDL download failed with {0}: {1}",
+                (int)response.StatusCode,
+                body));
         }
 
-        using var archive = new ZipArchive(
+        var result = await SubtitleHelpers.ExtractAsync(
             await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false),
-            ZipArchiveMode.Read);
+            language,
+            season,
+            episode,
+            cancellationToken).ConfigureAwait(false);
 
-        var entry = PickEntry(archive.Entries, season, episode);
+        _logger.LogInformation("SubDL: serving subtitle {Id}", parts[0]);
 
-        var buffer = new MemoryStream();
-        await using (var entryStream = entry.Open())
-        {
-            await entryStream.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
-        }
-
-        buffer.Position = 0;
-
-        _logger.LogInformation("SubDL: serving {Entry} for {Id}", entry.Name, parts[0]);
-
-        return new SubtitleResponse
-        {
-            Stream = buffer,
-            Language = language,
-            Format = Path.GetExtension(entry.Name).TrimStart('.').ToLowerInvariant()
-        };
+        return result;
     }
-
-    private static ZipArchiveEntry PickEntry(IReadOnlyList<ZipArchiveEntry> entries, int? season, int? episode)
-    {
-        var files = entries.Where(e => e.Length > 0 && IsSubtitleFile(e.Name)).ToArray();
-        if (files.Length == 0)
-        {
-            throw new InvalidOperationException("The SubDL archive contains no subtitle file.");
-        }
-
-        if (season is not null && episode is not null)
-        {
-            var sxxexx = string.Format(CultureInfo.InvariantCulture, "s{0:00}e{1:00}", season, episode);
-            var sxe = string.Format(CultureInfo.InvariantCulture, "{0}x{1:00}", season, episode);
-
-            var match = files.FirstOrDefault(e =>
-            {
-                var name = e.Name.ToLowerInvariant();
-                return name.Contains(sxxexx, StringComparison.Ordinal) || name.Contains(sxe, StringComparison.Ordinal);
-            });
-
-            if (match is not null)
-            {
-                return match;
-            }
-        }
-
-        // Nothing in the names identifies the episode, so fall back to the largest file.
-        // shortcut: wrong-episode risk on oddly named season packs, revisit if it shows up.
-        return files.OrderByDescending(e => e.Length).First();
-    }
-
-    private static bool IsSubtitleFile(string name)
-    {
-        var extension = Path.GetExtension(name);
-        return extension.Equals(".srt", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".ass", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".ssa", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".vtt", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsPersian(SubtitleSearchRequest request)
-        => string.Equals(request.TwoLetterISOLanguageName, "fa", StringComparison.OrdinalIgnoreCase)
-            || IsPersianCode(request.Language);
-
-    private static bool IsPersianCode(string? value)
-        => value is not null
-            && (value.Equals("fa", StringComparison.OrdinalIgnoreCase)
-                || value.Equals("fas", StringComparison.OrdinalIgnoreCase)
-                || value.Equals("per", StringComparison.OrdinalIgnoreCase)
-                || value.Contains("persian", StringComparison.OrdinalIgnoreCase)
-                || value.Contains("farsi", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsPersianResult(SubtitleItem item)
         => (item.Language is not null && item.Language.Equals("FA", StringComparison.OrdinalIgnoreCase))
@@ -232,11 +166,6 @@ public class SubdlSubtitleProvider : ISubtitleProvider
 
     private static string? NId(string? subtitlePage)
         => subtitlePage?.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
-
-    private static int? ParseIndex(string[] parts, int index)
-        => parts.Length > index && int.TryParse(parts[index], NumberStyles.Integer, CultureInfo.InvariantCulture, out var value)
-            ? value
-            : null;
 
     private static async Task<string> SafeBody(HttpResponseMessage response, CancellationToken cancellationToken)
     {
@@ -253,8 +182,8 @@ public class SubdlSubtitleProvider : ISubtitleProvider
 
     private async Task<HttpResponseMessage> SendAsync(string url, string apiKey, CancellationToken cancellationToken)
     {
-        var client = _httpClientFactory.CreateClient(SubdlApi.HttpClientName);
-        using var request = SubdlApi.CreateRequest(url, apiKey);
+        var client = _httpClientFactory.CreateClient(PluginHttp.ClientName);
+        using var request = PluginHttp.CreateBearerRequest(url, apiKey);
         return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
     }
 

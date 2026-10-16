@@ -9,22 +9,25 @@ namespace Jellyfin.Plugin.SubDL;
 
 /// <summary>
 /// Registers the plugin's services with Jellyfin's container. Jellyfin 12 does not discover
-/// plugin services by itself; without this the provider is never called.
+/// plugin services by itself; without this the providers are never called.
 /// </summary>
 public class PluginServiceRegistrator : IPluginServiceRegistrator
 {
     /// <inheritdoc />
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
-        serviceCollection.AddHttpClient(SubdlApi.HttpClientName, client =>
+        serviceCollection.AddHttpClient(PluginHttp.ClientName, client =>
         {
-            // subdl sits behind Cloudflare, which rejects requests that carry no User-Agent.
+            // Both services sit behind Cloudflare, which rejects requests that carry no User-Agent.
             client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue(
                 "Jellyfin-Plugin-SubDL",
                 typeof(PluginServiceRegistrator).Assembly.GetName().Version!.ToString()));
             client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         });
 
+        // Jellyfin asks providers in SubtitleFetcherOrder and stops at the first that returns
+        // results, so SubDL first with SubSource second gives fallback without extra logic.
         serviceCollection.AddSingleton<ISubtitleProvider, SubdlSubtitleProvider>();
+        serviceCollection.AddSingleton<ISubtitleProvider, SubSourceSubtitleProvider>();
     }
 }

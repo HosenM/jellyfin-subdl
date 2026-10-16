@@ -15,6 +15,16 @@
                             Get one at subdl.com under your account. The free tier allows 2,000 searches and 50 downloads per day.
                         </div>
                     </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="SubSourceApiKey">SubSource API key (optional)</label>
+                        <input id="SubSourceApiKey" name="SubSourceApiKey" type="text" is="emby-input" />
+                        <div class="fieldDescription">
+                            From subsource.net. Jellyfin asks subtitle providers in order and stops at the first
+                            that returns results, so while SubDL is listed above SubSource it acts as a fallback:
+                            used when SubDL has no Persian subtitle for an item, or when its daily quota is spent.
+                            Set that order under the library's subtitle settings. Leave empty to disable it.
+                        </div>
+                    </div>
                     <br />
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
@@ -253,6 +263,7 @@
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(SubDLPlugin.pluginUniqueId).then(function (config) {
                     document.querySelector('#ApiKey').value = config.ApiKey || '';
+                    document.querySelector('#SubSourceApiKey').value = config.SubSourceApiKey || '';
                     Dashboard.hideLoadingMsg();
                     loadSubDLStatus();
                     refreshTask();
@@ -268,6 +279,7 @@
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(SubDLPlugin.pluginUniqueId).then(function (config) {
                     config.ApiKey = document.querySelector('#ApiKey').value.trim();
+                    config.SubSourceApiKey = document.querySelector('#SubSourceApiKey').value.trim();
                     ApiClient.updatePluginConfiguration(SubDLPlugin.pluginUniqueId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);
                         loadSubDLStatus();

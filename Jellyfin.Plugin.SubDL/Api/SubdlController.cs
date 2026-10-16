@@ -47,8 +47,8 @@ public class SubdlController : ControllerBase
 
         try
         {
-            var client = _httpClientFactory.CreateClient(SubdlApi.HttpClientName);
-            using var request = SubdlApi.CreateRequest(SubdlApi.BaseUrl + "/api/v2/me", apiKey);
+            var client = _httpClientFactory.CreateClient(PluginHttp.ClientName);
+            using var request = PluginHttp.CreateBearerRequest(SubdlApi.BaseUrl + "/api/v2/me", apiKey);
             using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
@@ -61,7 +61,7 @@ public class SubdlController : ControllerBase
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            var me = await JsonSerializer.DeserializeAsync<SubdlApi.MeResponse>(stream, SubdlApi.JsonOptions, cancellationToken).ConfigureAwait(false);
+            var me = await JsonSerializer.DeserializeAsync<SubdlApi.MeResponse>(stream, PluginHttp.JsonOptions, cancellationToken).ConfigureAwait(false);
 
             return new StatusResult
             {
