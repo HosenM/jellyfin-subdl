@@ -22,6 +22,24 @@
                         </button>
                     </div>
                 </form>
+
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Account status</h2>
+                    <div id="SubDLStatus" class="fieldDescription">Checking&hellip;</div>
+                    <br />
+                    <button is="emby-button" type="button" id="SubDLRefresh" class="raised emby-button">
+                        <span>Refresh</span>
+                    </button>
+                </div>
+
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Recent activity</h2>
+                    <div class="fieldDescription">
+                        SubDL logs every search, download and failure under the <b>SubDL</b> prefix on
+                        <a is="emby-linkbutton" href="#/dashboard/logs">Dashboard &rarr; Logs</a>.
+                        Set the log level to <b>Debug</b> there for per-item search details.
+                    </div>
+                </div>
             </div>
         </div>
         <script type="text/javascript">
@@ -29,13 +47,56 @@
                 pluginUniqueId: "780885a1-46b9-4ba0-a3c8-d18ad7fe81b6"
             };
 
+            function loadSubDLStatus() {
+                var el = document.querySelector('#SubDLStatus');
+                el.textContent = 'Checking\u2026';
+
+                ApiClient.ajax({
+                    type: 'GET',
+                    url: ApiClient.getUrl('SubDL/Status'),
+                    dataType: 'json'
+                }).then(function (status) {
+                    if (!status.Configured) {
+                        el.textContent = 'No API key configured yet.';
+                        return;
+                    }
+
+                    if (status.Error) {
+                        el.textContent = 'Error: ' + status.Error;
+                        return;
+                    }
+
+                    el.innerHTML = '';
+                    var lines = [
+                        'Plan: ' + (status.Plan || 'unknown'),
+                        'Searches today: ' + status.SearchesUsed + ' / ' + status.SearchesLimit,
+                        'Downloads today: ' + status.DownloadsUsed + ' / ' + status.DownloadsLimit
+                    ];
+
+                    if (status.ResetAt) {
+                        lines.push('Quota resets: ' + new Date(status.ResetAt).toLocaleString());
+                    }
+
+                    lines.forEach(function (line) {
+                        var div = document.createElement('div');
+                        div.textContent = line;
+                        el.appendChild(div);
+                    });
+                }, function () {
+                    el.textContent = 'Could not reach the SubDL status endpoint.';
+                });
+            }
+
             document.querySelector('#SubDLConfigPage').addEventListener('pageshow', function () {
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(SubDLPlugin.pluginUniqueId).then(function (config) {
                     document.querySelector('#ApiKey').value = config.ApiKey || '';
                     Dashboard.hideLoadingMsg();
+                    loadSubDLStatus();
                 });
             });
+
+            document.querySelector('#SubDLRefresh').addEventListener('click', loadSubDLStatus);
 
             document.querySelector('#SubDLConfigForm').addEventListener('submit', function (e) {
                 e.preventDefault();
@@ -44,6 +105,7 @@
                     config.ApiKey = document.querySelector('#ApiKey').value.trim();
                     ApiClient.updatePluginConfiguration(SubDLPlugin.pluginUniqueId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);
+                        loadSubDLStatus();
                     });
                 });
                 return false;

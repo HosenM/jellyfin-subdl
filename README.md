@@ -30,6 +30,19 @@ task manually to backfill a library you already have.
 results scored 0.8 or higher are accepted. Persian subtitles are often season packs that
 score lower than that, so enabling this may result in nothing being downloaded.
 
+## Checking that it works
+
+The plugin config page (**Dashboard → Plugins → SubDL**) shows your SubDL plan and how many
+searches and downloads are left today. Press **Refresh** after a scan to watch the counters move.
+
+Every search, download and failure is logged under the `SubDL` prefix and is visible at
+**Dashboard → Logs**. Turn the log level up to `Debug` there for per-item detail. A successful
+search logs a line like:
+
+```
+[INF] Jellyfin.Plugin.SubDL.Providers.SubdlSubtitleProvider: SubDL: 2 Persian subtitle(s) for Anora.2024.2160p.AMZN.WEB-DL.DDP5.1.H.265-FLUX.mkv
+```
+
 ## API quota
 
 A free SubDL key allows 2,000 searches and 50 downloads per day. The plugin makes one

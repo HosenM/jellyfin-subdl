@@ -34,7 +34,13 @@ Jellyfin to fetch them by hand.
 ## How it works
 
 `Plugin : BasePlugin<PluginConfiguration>, IHasWebPages` provides identity (fixed GUID
-`780885a1-46b9-4ba0-a3c8-d18ad7fe81b6`) and a one-field config page for the API key.
+`780885a1-46b9-4ba0-a3c8-d18ad7fe81b6`) and a one-field config page for the API key. The page
+also shows the account's remaining daily quota, read through the plugin's own
+`GET /SubDL/Status` endpoint.
+
+`PluginServiceRegistrator : IPluginServiceRegistrator` is mandatory. Jellyfin 12 does not scan
+plugin assemblies for service interfaces, so without this the provider is never constructed and
+the plugin silently does nothing while still loading and reporting `Active`.
 
 `SubdlSubtitleProvider : ISubtitleProvider` implements the two methods Jellyfin calls:
 
@@ -77,3 +83,11 @@ the plugin contains no scheduling code.
 
 - Whether the `ThreeLetterISOLanguageName` should follow Jellyfin's own mapping rather than
   the hardcoded `fas`.
+
+## 1.0.1.0
+
+1.0.0.0 loaded and reported `Active` but never fetched anything: Jellyfin 12 registers plugin
+services only through `IPluginServiceRegistrator`, and the plugin had none. A load test that
+builds a `ServiceCollection`, runs every `IPluginServiceRegistrator` in the assembly and resolves
+`IEnumerable<ISubtitleProvider>` now guards this. 1.0.1.0 also adds `ILogger` logging on every
+search, download and failure, and the account-status endpoint behind the config page.
