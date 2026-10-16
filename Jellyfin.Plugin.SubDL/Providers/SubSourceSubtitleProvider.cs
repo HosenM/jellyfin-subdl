@@ -107,14 +107,18 @@ public class SubSourceSubtitleProvider : ISubtitleProvider
         var language = string.IsNullOrWhiteSpace(request.Language) ? "fa" : request.Language;
 
         var found = payload.Data
-            .Where(i => !string.IsNullOrWhiteSpace(i.SubtitleId))
+            .Where(i => i.SubtitleId is not null)
 
             // Foreign-parts entries only cover the non-English dialogue, which is the wrong
             // thing to hand back when someone asks for a full Persian subtitle.
             .Where(i => i.ForeignParts != true)
             .Select(i => new RemoteSubtitleInfo
             {
-                Id = SubtitleHelpers.BuildId(i.SubtitleId!, language, season, episode),
+                Id = SubtitleHelpers.BuildId(
+                    i.SubtitleId!.Value.ToString(CultureInfo.InvariantCulture),
+                    language,
+                    season,
+                    episode),
                 ProviderName = Name,
                 Name = i.ReleaseInfo is { Count: > 0 } ? string.Join(", ", i.ReleaseInfo) : "SubSource",
                 Format = "srt",
@@ -312,8 +316,9 @@ public class SubSourceSubtitleProvider : ISubtitleProvider
 
     private sealed class SubtitleItem
     {
+        // subsource returns this as a JSON number, not a string.
         [JsonPropertyName("subtitleId")]
-        public string? SubtitleId { get; set; }
+        public long? SubtitleId { get; set; }
 
         [JsonPropertyName("releaseInfo")]
         public List<string>? ReleaseInfo { get; set; }

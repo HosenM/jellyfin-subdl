@@ -110,10 +110,14 @@ episodes, since an episode's own IMDb id is not the series'), subtitles from `/a
 with `language=farsi_persian`, and a zip from `/api/v1/subtitles/{id}/download`. Forced
 ("foreign parts") entries are filtered out because they only cover the non-English dialogue.
 
-**Not verified against the live API.** The machine this was written on cannot resolve
+**Verified against the live API, indirectly.** The machine this was written on cannot resolve
 subsource.net (it answers with a private address) and connections to its Cloudflare addresses are
-reset, so the request shapes come from Bazarr rather than from an observed response. The first
-real search on a working network is the actual test.
+reset, so the request shapes came from Bazarr. The first real searches ran on the Jellyfin host
+instead, which can reach the API, and they showed that the title search, subtitle list and
+title/year matching all work. They also caught one wrong assumption: `subtitleId` is a JSON
+**number**, not a string. Bazarr is Python and never noticed; `System.Text.Json` threw
+`Cannot get the value of a token type 'Number' as a string` and the provider returned nothing,
+which is exactly what the per-provider error logging surfaced. Fixed in 1.1.0.1.
 
 ## Left to the builder
 
