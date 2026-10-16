@@ -6,6 +6,7 @@ using MediaBrowser.Controller.Providers;
 using MediaBrowser.Controller.Subtitles;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Providers;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.SubDL.Providers;
 
@@ -14,14 +15,22 @@ namespace Jellyfin.Plugin.SubDL.Providers;
 /// </summary>
 public class SubdlSubtitleProvider : ISubtitleProvider
 {
-    private const string ApiBase = "https://api.subdl.com";
-
     // subdl documents >= 0.8 as a confident release match.
     private const double PerfectMatchScore = 0.8;
 
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly ILogger<SubdlSubtitleProvider> _logger;
 
-    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SubdlSubtitleProvider"/> class.
+    /// </summary>
+    /// <param name="httpClientFactory">Instance of the <see cref="IHttpClientFactory"/> interface.</param>
+    /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
+    public SubdlSubtitleProvider(IHttpClientFactory httpClientFactory, ILogger<SubdlSubtitleProvider> logger)
+    {
+        _httpClientFactory = httpClientFactory;
+        _logger = logger;
+    }
 
     /// <inheritdoc />
     public string Name => "SubDL";
@@ -33,36 +42,56 @@ public class SubdlSubtitleProvider : ISubtitleProvider
     public async Task<IEnumerable<RemoteSubtitleInfo>> Search(SubtitleSearchRequest request, CancellationToken cancellationToken)
     {
         var apiKey = Plugin.Instance?.Configuration.ApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(request.MediaPath) || !IsPersian(request))
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            _logger.LogWarning("SubDL: no API key configured, skipping search for {Name}", request.Name);
+            return [];
+        }
+
+        if (string.IsNullOrWhiteSpace(request.MediaPath))
+        {
+            _logger.LogWarning("SubDL: {Name} has no media path, skipping search", request.Name);
+            return [];
+        }
+
+        if (!IsPersian(request))
         {
             return [];
         }
+
+        var fileName = Path.GetFileName(request.MediaPath);
 
         // subdl's "drop & match" endpoint takes the release filename and resolves both the
         // title and, for TV, the episode parsed out of the name.
         var url = string.Format(
             CultureInfo.InvariantCulture,
             "{0}/api/v2/files/search?filename={1}&languages=fa&type={2}",
-            ApiBase,
-            Uri.EscapeDataString(Path.GetFileName(request.MediaPath)),
+            SubdlApi.BaseUrl,
+            Uri.EscapeDataString(fileName),
             request.ContentType == VideoContentType.Episode ? "tv" : "movie");
 
-        using var response = await GetAsync(url, apiKey, cancellationToken).ConfigureAwait(false);
+        using var response = await SendAsync(url, apiKey, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
+            _logger.LogWarning(
+                "SubDL: search for {File} failed with {Status}: {Body}",
+                fileName,
+                (int)response.StatusCode,
+                await SafeBody(response, cancellationToken).ConfigureAwait(false));
             return [];
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        var payload = await JsonSerializer.DeserializeAsync<SearchResponse>(stream, JsonOptions, cancellationToken).ConfigureAwait(false);
+        var payload = await JsonSerializer.DeserializeAsync<SearchResponse>(stream, SubdlApi.JsonOptions, cancellationToken).ConfigureAwait(false);
         if (payload?.Subtitles is null)
         {
+            _logger.LogInformation("SubDL: {File} returned no subtitles", fileName);
             return [];
         }
 
         var language = string.IsNullOrWhiteSpace(request.Language) ? "fa" : request.Language;
 
-        return payload.Subtitles
+        var found = payload.Subtitles
             .Where(i => NId(i.SubtitlePage) is not null && i.MatchScore is not null && IsPersianResult(i))
             .Where(i => !request.IsPerfectMatch || i.MatchScore >= PerfectMatchScore)
             .OrderByDescending(i => i.MatchScore)
@@ -86,6 +115,14 @@ public class SubdlSubtitleProvider : ISubtitleProvider
                 ThreeLetterISOLanguageName = "fas"
             })
             .ToArray();
+
+        _logger.LogInformation(
+            "SubDL: {Count} Persian subtitle(s) for {File}{Perfect}",
+            found.Length,
+            fileName,
+            request.IsPerfectMatch ? " (perfect match required)" : string.Empty);
+
+        return found;
     }
 
     /// <inheritdoc />
@@ -99,17 +136,24 @@ public class SubdlSubtitleProvider : ISubtitleProvider
 
         var parts = id.Split('_', 4);
         var language = parts.Length > 1 && parts[1].Length > 0 ? parts[1] : "fa";
+        var season = ParseIndex(parts, 2);
+        var episode = ParseIndex(parts, 3);
 
-        var url = string.Format(CultureInfo.InvariantCulture, "{0}/api/v2/subtitles/{1}/download?format=zip", ApiBase, parts[0]);
+        var url = string.Format(CultureInfo.InvariantCulture, "{0}/api/v2/subtitles/{1}/download?format=zip", SubdlApi.BaseUrl, parts[0]);
 
-        using var response = await GetAsync(url, apiKey, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        using var response = await SendAsync(url, apiKey, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await SafeBody(response, cancellationToken).ConfigureAwait(false);
+            _logger.LogWarning("SubDL: download {Id} failed with {Status}: {Body}", parts[0], (int)response.StatusCode, body);
+            throw new HttpRequestException(string.Format(CultureInfo.InvariantCulture, "SubDL download failed with {0}: {1}", (int)response.StatusCode, body));
+        }
 
         using var archive = new ZipArchive(
             await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false),
             ZipArchiveMode.Read);
 
-        var entry = PickEntry(archive.Entries, ParseIndex(parts, 2), ParseIndex(parts, 3));
+        var entry = PickEntry(archive.Entries, season, episode);
 
         var buffer = new MemoryStream();
         await using (var entryStream = entry.Open())
@@ -118,6 +162,8 @@ public class SubdlSubtitleProvider : ISubtitleProvider
         }
 
         buffer.Position = 0;
+
+        _logger.LogInformation("SubDL: serving {Entry} for {Id}", entry.Name, parts[0]);
 
         return new SubtitleResponse
         {
@@ -192,11 +238,24 @@ public class SubdlSubtitleProvider : ISubtitleProvider
             ? value
             : null;
 
-    private static async Task<HttpResponseMessage> GetAsync(string url, string apiKey, CancellationToken cancellationToken)
+    private static async Task<string> SafeBody(HttpResponseMessage response, CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.Add("Authorization", "Bearer " + apiKey);
-        return await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            return body.Length > 300 ? body[..300] : body;
+        }
+        catch (Exception)
+        {
+            return "<unreadable>";
+        }
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(string url, string apiKey, CancellationToken cancellationToken)
+    {
+        var client = _httpClientFactory.CreateClient(SubdlApi.HttpClientName);
+        using var request = SubdlApi.CreateRequest(url, apiKey);
+        return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
     }
 
     private sealed class SearchResponse
