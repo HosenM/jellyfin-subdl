@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Jellyfin.Plugin.SubDL</RootNamespace>
     <AssemblyName>Jellyfin.Plugin.SubDL</AssemblyName>
-    <Version>1.0.1.1</Version>
+    <Version>1.0.2.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

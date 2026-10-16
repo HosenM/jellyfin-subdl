@@ -79,6 +79,20 @@ the plugin contains no scheduling code.
 - No unit test project. The risky logic (id round trip, archive entry choice) was exercised
   against the real service instead.
 
+## 1.0.2.0
+
+The plugin page gained a **Run now** button that starts Jellyfin's *Download missing subtitles*
+task, the task's state and last result, and a warning listing libraries whose
+*Require a perfect subtitle match* setting is on.
+
+That warning is the important part. The plugin maps `IsPerfectMatch` onto subdl's `match_score`
+>= 0.8, which the subdl docs call a confident release match. For Persian that bar is brutal: across
+14 sample movies only one reached 0.8, because the Persian catalogue is mostly season packs and a
+pack's release name never resembles a single episode's filename closely. The flag is kept
+faithful to Jellyfin's meaning, so the fix is to turn the library setting off, and the page now says
+so rather than silently returning nothing. OpenSubtitles solves the same problem by requiring an
+exact file-hash match, which subdl cannot offer.
+
 ## Left to the builder
 
 - Whether the `ThreeLetterISOLanguageName` should follow Jellyfin's own mapping rather than

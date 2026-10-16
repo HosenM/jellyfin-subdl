@@ -33,23 +33,45 @@
                 </div>
 
                 <div class="verticalSection">
-                    <h2 class="sectionTitle">Recent activity</h2>
+                    <h2 class="sectionTitle">Downloads</h2>
+                    <div class="fieldDescription">
+                        SubDL is a subtitle provider, so downloads run through Jellyfin's own
+                        &ldquo;Download missing subtitles&rdquo; task. Run it now to fetch Persian
+                        subtitles for everything that is missing them.
+                    </div>
+                    <div id="SubDLTask" class="fieldDescription" style="margin-top:1em;">Checking&hellip;</div>
+                    <br />
+                    <button is="emby-button" type="button" id="SubDLRunNow" class="raised button-submit emby-button">
+                        <span>Run now</span>
+                    </button>
+                </div>
+
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Library settings</h2>
+                    <div id="SubDLLibraries" class="fieldDescription">Checking&hellip;</div>
+                </div>
+
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Logs</h2>
                     <div class="fieldDescription">
                         SubDL logs every search, download and failure under the <b>SubDL</b> prefix on
                         <a is="emby-linkbutton" href="#/dashboard/logs">Dashboard &rarr; Logs</a>.
-                        Set the log level to <b>Debug</b> there for per-item search details.
                     </div>
                 </div>
             </div>
         </div>
         <script type="text/javascript">
             var SubDLPlugin = {
-                pluginUniqueId: "780885a1-46b9-4ba0-a3c8-d18ad7fe81b6"
+                pluginUniqueId: "780885a1-46b9-4ba0-a3c8-d18ad7fe81b6",
+                pollTimer: null
             };
 
+            function setText(id, text) {
+                document.querySelector('#' + id).textContent = text;
+            }
+
             function loadSubDLStatus() {
-                var el = document.querySelector('#SubDLStatus');
-                el.textContent = 'Checking\u2026';
+                setText('SubDLStatus', 'Checking\u2026');
 
                 ApiClient.ajax({
                     type: 'GET',
@@ -57,15 +79,16 @@
                     dataType: 'json'
                 }).then(function (status) {
                     if (!status.Configured) {
-                        el.textContent = 'No API key configured yet.';
+                        setText('SubDLStatus', 'No API key configured yet.');
                         return;
                     }
 
                     if (status.Error) {
-                        el.textContent = 'Error: ' + status.Error;
+                        setText('SubDLStatus', 'Error: ' + status.Error);
                         return;
                     }
 
+                    var el = document.querySelector('#SubDLStatus');
                     el.innerHTML = '';
                     var lines = [
                         'Plan: ' + (status.Plan || 'unknown'),
@@ -83,7 +106,146 @@
                         el.appendChild(div);
                     });
                 }, function () {
-                    el.textContent = 'Could not reach the SubDL status endpoint.';
+                    setText('SubDLStatus', 'Could not reach the SubDL status endpoint.');
+                });
+            }
+
+            function getSubtitleTask() {
+                return ApiClient.getJSON(ApiClient.getUrl('ScheduledTasks')).then(function (tasks) {
+                    for (var i = 0; i < tasks.length; i++) {
+                        if (tasks[i].Key === 'DownloadSubtitles') {
+                            return tasks[i];
+                        }
+                    }
+                    return null;
+                });
+            }
+
+            function renderTask(task) {
+                if (!task) {
+                    setText('SubDLTask', 'Could not find the "Download missing subtitles" task.');
+                    return;
+                }
+
+                var el = document.querySelector('#SubDLTask');
+                el.innerHTML = '';
+
+                var lines = ['Task state: ' + task.State];
+
+                if (typeof task.CurrentProgressPercentage === 'number') {
+                    lines.push('Progress: ' + Math.round(task.CurrentProgressPercentage) + '%');
+                }
+
+                var last = task.LastExecutionResult;
+
+                if (last && last.StartTimeUtc) {
+                    lines.push('Last run: ' + new Date(last.StartTimeUtc).toLocaleString()
+                        + ' (' + (last.Status || 'unknown') + ')');
+                } else {
+                    lines.push('Last run: never');
+                }
+
+                lines.forEach(function (line) {
+                    var div = document.createElement('div');
+                    div.textContent = line;
+                    el.appendChild(div);
+                });
+
+                return task;
+            }
+
+            function refreshTask() {
+                return getSubtitleTask().then(renderTask);
+            }
+
+            function pollTask() {
+                if (SubDLPlugin.pollTimer) {
+                    clearInterval(SubDLPlugin.pollTimer);
+                }
+
+                SubDLPlugin.pollTimer = setInterval(function () {
+                    getSubtitleTask().then(function (task) {
+                        renderTask(task);
+
+                        if (!task || task.State === 'Idle') {
+                            clearInterval(SubDLPlugin.pollTimer);
+                            SubDLPlugin.pollTimer = null;
+                            loadSubDLStatus();
+                        }
+                    });
+                }, 3000);
+            }
+
+            function runNow() {
+                getSubtitleTask().then(function (task) {
+                    if (!task) {
+                        Dashboard.alert('Could not find the "Download missing subtitles" task.');
+                        return;
+                    }
+
+                    Dashboard.showLoadingMsg();
+                    ApiClient.ajax({
+                        type: 'POST',
+                        url: ApiClient.getUrl('ScheduledTasks/Running/' + task.Id),
+                        contentType: 'application/json',
+                        data: '{}'
+                    }).then(function () {
+                        Dashboard.hideLoadingMsg();
+                        pollTask();
+                    }, function () {
+                        Dashboard.hideLoadingMsg();
+                        Dashboard.alert('Could not start the subtitle download task.');
+                    });
+                });
+            }
+
+            function checkLibraries() {
+                ApiClient.getJSON(ApiClient.getUrl('Library/VirtualFolders')).then(function (libraries) {
+                    var el = document.querySelector('#SubDLLibraries');
+                    el.innerHTML = '';
+
+                    var warnings = [];
+
+                    libraries.forEach(function (library) {
+                        var options = library.LibraryOptions || {};
+                        var languages = options.SubtitleDownloadLanguages || [];
+
+                        if (languages.length === 0) {
+                            return;
+                        }
+
+                        var hasPersian = languages.some(function (lang) {
+                            var value = String(lang).toLowerCase();
+                            return value === 'fa' || value === 'fas' || value === 'per'
+                                || value.indexOf('persian') !== -1 || value.indexOf('farsi') !== -1;
+                        });
+
+                        if (!hasPersian) {
+                            return;
+                        }
+
+                        if (options.RequirePerfectSubtitleMatch) {
+                            warnings.push('"' + library.Name + '" requires a perfect subtitle match. SubDL scores how closely a '
+                                + 'release name matches (0 to 1), and Persian subtitles are usually season packs that score well below '
+                                + 'the 0.8 the plugin treats as perfect, so almost nothing will download. Turn off '
+                                + '"Require a perfect subtitle match" in the library\'s subtitle settings to let them through.');
+                        }
+                    });
+
+                    if (warnings.length === 0) {
+                        el.textContent = 'No obvious blockers found. Run the task and watch the logs.';
+                        return;
+                    }
+
+                    warnings.forEach(function (warning) {
+                        var div = document.createElement('div');
+                        div.textContent = '\u26A0 ' + warning;
+                        div.style.marginBottom = '0.75em';
+                        div.style.color = '#cc7b1f';
+                        el.appendChild(div);
+                    });
+                }, function () {
+                    setText('SubDLLibraries', 'Could not read library settings.');
                 });
             }
 
@@ -93,10 +255,13 @@
                     document.querySelector('#ApiKey').value = config.ApiKey || '';
                     Dashboard.hideLoadingMsg();
                     loadSubDLStatus();
+                    refreshTask();
+                    checkLibraries();
                 });
             });
 
             document.querySelector('#SubDLRefresh').addEventListener('click', loadSubDLStatus);
+            document.querySelector('#SubDLRunNow').addEventListener('click', runNow);
 
             document.querySelector('#SubDLConfigForm').addEventListener('submit', function (e) {
                 e.preventDefault();

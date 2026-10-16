@@ -27,13 +27,20 @@ Persian subtitles for existing items, and new items get them as they are scanned
 task manually to backfill a library you already have.
 
 `Require a perfect subtitle match` maps onto subdl's `match_score`: with it enabled only
-results scored 0.8 or higher are accepted. Persian subtitles are often season packs that
-score lower than that, so enabling this may result in nothing being downloaded.
+results scored 0.8 or higher are accepted. That bar is brutal for Persian — the catalogue is
+mostly season packs, whose release names never resemble a single episode's filename, and on a
+sample of 14 movies only one cleared 0.8. **Turn the setting off** (**Edit library → Subtitles**)
+unless you would rather have no subtitle than an imperfect one. The plugin page warns you while
+it is on.
+
+The download task runs every 24 hours. Press **Run now** on the plugin page to start it
+immediately.
 
 ## Checking that it works
 
 The plugin config page (**Dashboard → Plugins → SubDL**) shows your SubDL plan and how many
-searches and downloads are left today. Press **Refresh** after a scan to watch the counters move.
+searches and downloads are left today, the state of the download task, and a **Run now** button
+that starts Jellyfin's *Download missing subtitles* task.
 
 Every search, download and failure is logged under the `SubDL` prefix and is visible at
 **Dashboard → Logs**. Turn the log level up to `Debug` there for per-item detail. A successful
@@ -46,8 +53,8 @@ search logs a line like:
 ## API quota
 
 A free SubDL key allows 2,000 searches and 50 downloads per day. The plugin makes one
-search per item and one download per subtitle, so a large backfill can exhaust the daily
-download quota; the scheduled task picks up where it left off on the next run.
+search per item and one download per subtitle, so a backfill of a few hundred items takes several
+days; the scheduled task picks up where it left off on the next run.
 
 ## How it works
 
