@@ -47,6 +47,9 @@ internal static class SubdlApi
         [JsonPropertyName("limit")]
         public int Limit { get; set; }
 
+        [JsonPropertyName("remaining")]
+        public int? Remaining { get; set; }
+
         [JsonPropertyName("reset_at")]
         public string? ResetAt { get; set; }
     }

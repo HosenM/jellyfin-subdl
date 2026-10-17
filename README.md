@@ -27,6 +27,22 @@ subtitle for an item, or when its daily quota is spent. Set the order under
 
 Leave the SubSource key empty to disable that source entirely.
 
+### How the quota hand-over works
+
+subdl gives a free key **2,000 searches** and only **50 downloads** a day, and downloads are the
+limit you actually hit. The plugin therefore checks the download quota before offering any subdl
+result and, when it is spent, returns nothing so Jellyfin falls through to SubSource. Without that
+check the search would still succeed, Jellyfin would pick a subdl subtitle, the download would fail,
+and SubSource would never be tried.
+
+The check reads `/api/v2/me`, which does not count against the search quota, and is cached for a
+minute. A failure to read it is treated as "quota available" so a hiccup cannot silently disable
+the provider. The log says which way it went:
+
+```
+[WRN] SubDL: daily download quota is spent, handing 7 result(s) over to the next provider
+```
+
 ## Automatic subtitle downloads
 
 The plugin registers itself as a subtitle provider, so Jellyfin's existing subtitle

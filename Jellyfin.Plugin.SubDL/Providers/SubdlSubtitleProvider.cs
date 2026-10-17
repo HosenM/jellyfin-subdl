@@ -17,6 +17,14 @@ public class SubdlSubtitleProvider : ISubtitleProvider
     // subdl documents >= 0.8 as a confident release match.
     private const double PerfectMatchScore = 0.8;
 
+    // The free tier allows 50 downloads a day, and once that is gone every download fails.
+    // Offering results the plugin cannot fetch would stop Jellyfin from moving on to the next
+    // provider, so the remaining downloads are checked before anything is returned.
+    private static readonly TimeSpan QuotaCacheDuration = TimeSpan.FromMinutes(1);
+
+    private static DateTime _downloadsCheckedAt = DateTime.MinValue;
+    private static int _downloadsRemaining = int.MaxValue;
+
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<SubdlSubtitleProvider> _logger;
 
@@ -111,7 +119,58 @@ public class SubdlSubtitleProvider : ISubtitleProvider
             fileName,
             request.IsPerfectMatch ? " (perfect match required)" : string.Empty);
 
+        if (found.Length > 0 && !await HasDownloadQuotaAsync(apiKey, cancellationToken).ConfigureAwait(false))
+        {
+            _logger.LogWarning(
+                "SubDL: daily download quota is spent, handing {Count} result(s) over to the next provider",
+                found.Length);
+            return [];
+        }
+
         return found;
+    }
+
+    /// <summary>
+    /// Checks whether subdl still has downloads left today. A failure to read the quota is not
+    /// treated as exhaustion, so a hiccup on /me cannot silently disable the provider.
+    /// </summary>
+    private async Task<bool> HasDownloadQuotaAsync(string apiKey, CancellationToken cancellationToken)
+    {
+        if (DateTime.UtcNow - _downloadsCheckedAt < QuotaCacheDuration)
+        {
+            return _downloadsRemaining > 0;
+        }
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient(PluginHttp.ClientName);
+            using var request = PluginHttp.CreateBearerRequest(SubdlApi.BaseUrl + "/api/v2/me", apiKey);
+            using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return true;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            var me = await JsonSerializer.DeserializeAsync<SubdlApi.MeResponse>(stream, PluginHttp.JsonOptions, cancellationToken).ConfigureAwait(false);
+
+            var downloads = me?.Usage?.Downloads;
+            if (downloads is null)
+            {
+                return true;
+            }
+
+            _downloadsRemaining = downloads.Remaining ?? (downloads.Limit - downloads.Used);
+            _downloadsCheckedAt = DateTime.UtcNow;
+
+            return _downloadsRemaining > 0;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            _logger.LogDebug(ex, "SubDL: could not read the download quota");
+            return true;
+        }
     }
 
     /// <inheritdoc />

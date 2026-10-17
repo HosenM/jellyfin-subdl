@@ -144,6 +144,17 @@ fake tree: the three genuine orphans are found while tagged subtitles, nested li
 locations and non-subtitle files are all handled correctly, and an existing file at the
 destination is preserved under a `.1` name.
 
+## 1.2.1.0
+
+Fixed the quota hand-over. The fallback only fired on a failed *search*, but subdl's binding limit
+is 50 **downloads** a day, not searches: with the download quota spent the search still succeeded,
+Jellyfin chose a subdl result, the download failed, and SubSource was never consulted.
+
+`Search` now checks `/api/v2/me` before returning anything and returns an empty list when
+`downloads.remaining` is zero, so the next provider gets the item. The answer is cached for a
+minute rather than queried per item, `/me` is free, and a failed or unreadable check is treated as
+"quota available" rather than disabling subdl on a hiccup. Logged at warning level when it trips.
+
 ## Left to the builder
 
 - Whether the `ThreeLetterISOLanguageName` should follow Jellyfin's own mapping rather than
