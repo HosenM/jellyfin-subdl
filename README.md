@@ -46,7 +46,8 @@ the provider. The log says which way it went:
 ## Automatic subtitle downloads
 
 The plugin registers itself as a subtitle provider, so Jellyfin's existing subtitle
-machinery does the work — there is no separate download task in the plugin.
+machinery does the work for series, and for movies while *Persian subtitles per movie* is 0.
+Movies have their own task when that setting is above 0 (see the next section).
 
 To download subtitles automatically, set Persian as a subtitle download language on the
 library (**Edit library → Subtitles → Download languages**) or server-wide under
@@ -61,14 +62,51 @@ sample of 14 movies only one cleared 0.8. **Turn the setting off** (**Edit libra
 unless you would rather have no subtitle than an imperfect one. The plugin page warns you while
 it is on.
 
-The download task runs every 24 hours. Press **Run now** on the plugin page to start it
-immediately.
+The download task runs every 24 hours. Press **Run now** under *Series downloads* on the plugin
+page to start it immediately.
+
+## Several subtitles per movie
+
+subdl often has many Persian subtitles for one movie, made by different translators, but Jellyfin's
+own download keeps one file per language. Set **Persian subtitles per movie** on the plugin page
+(0 to 50, default 0) and the plugin downloads that many for each movie instead. 0 leaves everything
+as described above.
+
+With the setting above 0, the **Download Persian subtitles** scheduled task handles movies:
+
+- It only looks at movies that have no Persian subtitle yet, embedded or external. Movies that
+  already have one are left alone.
+- It takes at most one subtitle per uploader (the best match when an uploader has several), highest
+  match score first, up to the number you set.
+- It does the newest movies first (by date added) and fills each movie completely before moving on.
+- Each movie is searched once. When the task has got through a movie, it is finished and is not
+  searched again, even if subdl later gets more subtitles or you raise the number. A movie cut
+  short by the daily download quota is picked up again on the next run.
+- It runs every 24 hours, and again about five minutes after a library scan adds movies. Press
+  **Run now** under *Movie downloads* to start it yourself.
+- If subdl has no Persian subtitle for a movie, SubSource is used as the backup.
+
+Each file is named after the video, then subdl's title and the uploader, so the player's subtitle
+menu shows them as Persian with that title. For `Anora.2024.2160p.AMZN.WEB-DL.mkv`:
+
+```
+Anora.2024.2160p.AMZN.WEB-DL.Anora 2024 1080p BluRay - Ali Rezaei.fa.srt
+```
+
+Existing files are never overwritten. Where the files go follows the library's *Save subtitles with
+media* option.
+
+Persian **stays** in the library's subtitle download languages, because series still use Jellyfin's
+*Download missing subtitles* task. To keep that task from saving a plain `Movie.fa.srt` first, the
+SubDL and SubSource providers return nothing for movies while the setting is above 0. That means
+the manual subtitle search in a movie's menu shows no SubDL or SubSource results. Episodes are not
+affected.
 
 ## Checking that it works
 
 The plugin config page (**Dashboard → Plugins → SubDL**) shows your SubDL plan and how many
-searches and downloads are left today, the state of the download task, and a **Run now** button
-that starts Jellyfin's *Download missing subtitles* task.
+searches and downloads are left today, the state of the movie task and of Jellyfin's *Download
+missing subtitles* task (used for series), each with a **Run now** button.
 
 Every search, download and failure is logged under the `SubDL` prefix and is visible at
 **Dashboard → Logs**. Turn the log level up to `Debug` there for per-item detail. A successful
@@ -103,6 +141,10 @@ twice.
 A free SubDL key allows 2,000 searches and 50 downloads per day. The plugin makes one
 search per item and one download per subtitle, so a backfill of a few hundred items takes several
 days; the scheduled task picks up where it left off on the next run.
+
+With *Persian subtitles per movie* above 0, each subtitle is one download, so a movie costs up to
+that many downloads and the setting multiplies your download use. At 3 per movie a free key covers
+about 16 movies a day; the task stops when the quota is spent and carries on the next run.
 
 A subdl quota that runs out mid-run is not an error: SubDL reports nothing, Jellyfin moves on to
 SubSource, and the log shows the failed subdl call next to the successful SubSource one.

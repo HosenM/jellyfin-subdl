@@ -33,6 +33,15 @@
                             instance can write to.
                         </div>
                     </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="SubtitlesPerMovie">Persian subtitles per movie</label>
+                        <input id="SubtitlesPerMovie" name="SubtitlesPerMovie" type="number" min="0" max="50" step="1" is="emby-input" />
+                        <div class="fieldDescription">
+                            0 turns this off. While it is above 0, movies get their Persian subtitles from the
+                            'Download Persian subtitles' task, one per uploader, and the subtitle search in a
+                            movie's menu shows no SubDL or SubSource results. Series are not affected.
+                        </div>
+                    </div>
                     <br />
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
@@ -51,11 +60,25 @@
                 </div>
 
                 <div class="verticalSection">
-                    <h2 class="sectionTitle">Downloads</h2>
+                    <h2 class="sectionTitle">Movie downloads</h2>
                     <div class="fieldDescription">
-                        SubDL is a subtitle provider, so downloads run through Jellyfin's own
-                        &ldquo;Download missing subtitles&rdquo; task. Run it now to fetch Persian
-                        subtitles for everything that is missing them.
+                        The &ldquo;Download Persian subtitles&rdquo; task fetches several Persian subtitles
+                        for each movie that has none, one per uploader. It only does anything while
+                        &ldquo;Persian subtitles per movie&rdquo; above is more than 0.
+                    </div>
+                    <div id="SubDLMovieTask" class="fieldDescription" style="margin-top:1em;">Checking&hellip;</div>
+                    <br />
+                    <button is="emby-button" type="button" id="SubDLMovieRunNow" class="raised button-submit emby-button">
+                        <span>Run now</span>
+                    </button>
+                </div>
+
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Series downloads</h2>
+                    <div class="fieldDescription">
+                        Series use Jellyfin's own &ldquo;Download missing subtitles&rdquo; task, which asks
+                        SubDL like any other subtitle provider. Run it now to fetch Persian subtitles for
+                        every episode that is missing them.
                     </div>
                     <div id="SubDLTask" class="fieldDescription" style="margin-top:1em;">Checking&hellip;</div>
                     <br />
@@ -98,8 +121,13 @@
         <script type="text/javascript">
             var SubDLPlugin = {
                 pluginUniqueId: "780885a1-46b9-4ba0-a3c8-d18ad7fe81b6",
-                pollTimer: null
+                pollTimers: {}
             };
+
+            var SubDLTasks = [
+                { key: 'SubDLMovieSubtitles', id: 'SubDLMovieTask', name: 'Download Persian subtitles' },
+                { key: 'DownloadSubtitles', id: 'SubDLTask', name: 'Download missing subtitles' }
+            ];
 
             function setText(id, text) {
                 document.querySelector('#' + id).textContent = text;
@@ -145,10 +173,10 @@
                 });
             }
 
-            function getSubtitleTask() {
+            function getSubtitleTask(taskKey) {
                 return ApiClient.getJSON(ApiClient.getUrl('ScheduledTasks')).then(function (tasks) {
                     for (var i = 0; i < tasks.length; i++) {
-                        if (tasks[i].Key === 'DownloadSubtitles') {
+                        if (tasks[i].Key === taskKey) {
                             return tasks[i];
                         }
                     }
@@ -156,13 +184,13 @@
                 });
             }
 
-            function renderTask(task) {
+            function renderTask(task, elementId, taskName) {
                 if (!task) {
-                    setText('SubDLTask', 'Could not find the "Download missing subtitles" task.');
+                    setText(elementId, 'Could not find the "' + taskName + '" task.');
                     return;
                 }
 
-                var el = document.querySelector('#SubDLTask');
+                var el = document.querySelector('#' + elementId);
                 el.innerHTML = '';
 
                 var lines = ['Task state: ' + task.State];
@@ -189,32 +217,40 @@
                 return task;
             }
 
-            function refreshTask() {
-                return getSubtitleTask().then(renderTask);
+            function refreshTask(taskKey, elementId, taskName) {
+                return getSubtitleTask(taskKey).then(function (task) {
+                    return renderTask(task, elementId, taskName);
+                });
             }
 
-            function pollTask() {
-                if (SubDLPlugin.pollTimer) {
-                    clearInterval(SubDLPlugin.pollTimer);
+            function refreshAllTasks() {
+                SubDLTasks.forEach(function (t) {
+                    refreshTask(t.key, t.id, t.name);
+                });
+            }
+
+            function pollTask(taskKey, elementId, taskName) {
+                if (SubDLPlugin.pollTimers[taskKey]) {
+                    clearInterval(SubDLPlugin.pollTimers[taskKey]);
                 }
 
-                SubDLPlugin.pollTimer = setInterval(function () {
-                    getSubtitleTask().then(function (task) {
-                        renderTask(task);
+                SubDLPlugin.pollTimers[taskKey] = setInterval(function () {
+                    getSubtitleTask(taskKey).then(function (task) {
+                        renderTask(task, elementId, taskName);
 
                         if (!task || task.State === 'Idle') {
-                            clearInterval(SubDLPlugin.pollTimer);
-                            SubDLPlugin.pollTimer = null;
+                            clearInterval(SubDLPlugin.pollTimers[taskKey]);
+                            SubDLPlugin.pollTimers[taskKey] = null;
                             loadSubDLStatus();
                         }
                     });
                 }, 3000);
             }
 
-            function runNow() {
-                getSubtitleTask().then(function (task) {
+            function runNow(taskKey, elementId, taskName) {
+                getSubtitleTask(taskKey).then(function (task) {
                     if (!task) {
-                        Dashboard.alert('Could not find the "Download missing subtitles" task.');
+                        Dashboard.alert('Could not find the "' + taskName + '" task.');
                         return;
                     }
 
@@ -226,10 +262,10 @@
                         data: '{}'
                     }).then(function () {
                         Dashboard.hideLoadingMsg();
-                        pollTask();
+                        pollTask(taskKey, elementId, taskName);
                     }, function () {
                         Dashboard.hideLoadingMsg();
-                        Dashboard.alert('Could not start the subtitle download task.');
+                        Dashboard.alert('Could not start the "' + taskName + '" task.');
                     });
                 });
             }
@@ -372,15 +408,21 @@
                     document.querySelector('#ApiKey').value = config.ApiKey || '';
                     document.querySelector('#SubSourceApiKey').value = config.SubSourceApiKey || '';
                     document.querySelector('#ArchivePath').value = config.ArchivePath || '';
+                    document.querySelector('#SubtitlesPerMovie').value = config.SubtitlesPerMovie || 0;
                     Dashboard.hideLoadingMsg();
                     loadSubDLStatus();
-                    refreshTask();
+                    refreshAllTasks();
                     checkLibraries();
                 });
             });
 
             document.querySelector('#SubDLRefresh').addEventListener('click', loadSubDLStatus);
-            document.querySelector('#SubDLRunNow').addEventListener('click', runNow);
+            document.querySelector('#SubDLMovieRunNow').addEventListener('click', function () {
+                runNow(SubDLTasks[0].key, SubDLTasks[0].id, SubDLTasks[0].name);
+            });
+            document.querySelector('#SubDLRunNow').addEventListener('click', function () {
+                runNow(SubDLTasks[1].key, SubDLTasks[1].id, SubDLTasks[1].name);
+            });
             document.querySelector('#SubDLScan').addEventListener('click', scanOrphans);
             document.querySelector('#SubDLArchive').addEventListener('click', archiveOrphans);
 
@@ -391,6 +433,7 @@
                     config.ApiKey = document.querySelector('#ApiKey').value.trim();
                     config.SubSourceApiKey = document.querySelector('#SubSourceApiKey').value.trim();
                     config.ArchivePath = document.querySelector('#ArchivePath').value.trim();
+                    config.SubtitlesPerMovie = parseInt(document.querySelector('#SubtitlesPerMovie').value, 10) || 0;
                     ApiClient.updatePluginConfiguration(SubDLPlugin.pluginUniqueId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);
                         loadSubDLStatus();
