@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Not excluded from runtime, so the Jellyfin types load while tests run. -->
+    <PackageReference Include="Jellyfin.Controller" Version="12.2.0" />
+    <PackageReference Include="Jellyfin.Model" Version="12.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../Jellyfin.Plugin.SubDL/Jellyfin.Plugin.SubDL.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,6 +1,4 @@
 using System.Globalization;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Controller.Subtitles;
 using MediaBrowser.Model.Entities;
@@ -14,22 +12,17 @@ namespace Jellyfin.Plugin.SubDL.Providers;
 /// </summary>
 public class SubSourceSubtitleProvider : ISubtitleProvider
 {
-    private const string BaseUrl = "https://api.subsource.net/api/v1";
-
-    // subsource names languages rather than using codes, in its own casing.
-    private const string PersianLanguage = "farsi_persian";
-
-    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly SubSourceClient _client;
     private readonly ILogger<SubSourceSubtitleProvider> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SubSourceSubtitleProvider"/> class.
     /// </summary>
-    /// <param name="httpClientFactory">Instance of the <see cref="IHttpClientFactory"/> interface.</param>
+    /// <param name="client">The shared SubSource client.</param>
     /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
-    public SubSourceSubtitleProvider(IHttpClientFactory httpClientFactory, ILogger<SubSourceSubtitleProvider> logger)
+    public SubSourceSubtitleProvider(SubSourceClient client, ILogger<SubSourceSubtitleProvider> logger)
     {
-        _httpClientFactory = httpClientFactory;
+        _client = client;
         _logger = logger;
     }
 
@@ -42,6 +35,12 @@ public class SubSourceSubtitleProvider : ISubtitleProvider
     /// <inheritdoc />
     public async Task<IEnumerable<RemoteSubtitleInfo>> Search(SubtitleSearchRequest request, CancellationToken cancellationToken)
     {
+        if (SubtitleHelpers.IsLeftToMovieTask(request.ContentType, Plugin.Instance?.Configuration.SubtitlesPerMovie ?? 0))
+        {
+            _logger.LogDebug("SubSource: leaving movie {Name} to the movie subtitle task", request.Name);
+            return [];
+        }
+
         var apiKey = Plugin.Instance?.Configuration.SubSourceApiKey;
         if (string.IsNullOrWhiteSpace(apiKey))
         {
@@ -57,70 +56,26 @@ public class SubSourceSubtitleProvider : ISubtitleProvider
         var season = request.ParentIndexNumber;
         var episode = request.IndexNumber;
 
-        var movieId = await FindMovieIdAsync(request, isEpisode, apiKey, cancellationToken).ConfigureAwait(false);
-        if (movieId is null)
-        {
-            _logger.LogInformation("SubSource: no title match for {Name}", request.Name);
-            return [];
-        }
-
-        var url = string.Format(
-            CultureInfo.InvariantCulture,
-            "{0}/subtitles?api_key={1}&movieId={2}&language={3}&limit=100",
-            BaseUrl,
-            Uri.EscapeDataString(apiKey),
-            movieId,
-            PersianLanguage);
-
-        if (isEpisode)
-        {
-            if (season is not null)
-            {
-                url += string.Format(CultureInfo.InvariantCulture, "&seasonNumber={0}", season);
-            }
-
-            if (episode is not null)
-            {
-                url += string.Format(CultureInfo.InvariantCulture, "&episodeNumber={0}", episode);
-            }
-        }
-
-        using var response = await SendAsync(url, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            _logger.LogWarning(
-                "SubSource: subtitle list for {Name} failed with {Status}",
-                request.Name,
-                (int)response.StatusCode);
-            return [];
-        }
-
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        var payload = await JsonSerializer.DeserializeAsync<SubtitleListResponse>(stream, PluginHttp.JsonOptions, cancellationToken).ConfigureAwait(false);
-
-        if (payload?.Success == false || payload?.Data is null)
-        {
-            _logger.LogInformation("SubSource: no subtitles for {Name}", request.Name);
-            return [];
-        }
+        var results = await _client.SearchAsync(
+            GetProviderId(request, "Imdb"),
+            isEpisode ? request.SeriesName : request.Name,
+            request.ProductionYear,
+            isEpisode,
+            season,
+            episode,
+            apiKey,
+            cancellationToken).ConfigureAwait(false);
 
         var language = string.IsNullOrWhiteSpace(request.Language) ? "fa" : request.Language;
 
-        var found = payload.Data
-            .Where(i => i.SubtitleId is not null)
-
-            // Foreign-parts entries only cover the non-English dialogue, which is the wrong
-            // thing to hand back when someone asks for a full Persian subtitle.
-            .Where(i => i.ForeignParts != true)
+        // A failed call and no match look the same to Jellyfin: nothing from this provider.
+        var found = (results ?? [])
             .Select(i => new RemoteSubtitleInfo
             {
-                Id = SubtitleHelpers.BuildId(
-                    i.SubtitleId!.Value.ToString(CultureInfo.InvariantCulture),
-                    language,
-                    season,
-                    episode),
+                Id = SubtitleHelpers.BuildId(i.Id, language, season, episode),
                 ProviderName = Name,
-                Name = i.ReleaseInfo is { Count: > 0 } ? string.Join(", ", i.ReleaseInfo) : "SubSource",
+                Name = i.ReleaseName ?? "SubSource",
+                Author = i.Uploader,
                 Format = "srt",
                 ThreeLetterISOLanguageName = "fas"
             })
@@ -145,14 +100,7 @@ public class SubSourceSubtitleProvider : ISubtitleProvider
         var season = SubtitleHelpers.ParseIndex(parts, 2);
         var episode = SubtitleHelpers.ParseIndex(parts, 3);
 
-        var url = string.Format(
-            CultureInfo.InvariantCulture,
-            "{0}/subtitles/{1}/download?api_key={2}",
-            BaseUrl,
-            parts[0],
-            Uri.EscapeDataString(apiKey));
-
-        using var response = await SendAsync(url, cancellationToken).ConfigureAwait(false);
+        using var response = await _client.DownloadAsync(parts[0], apiKey, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("SubSource: download {Id} failed with {Status}", parts[0], (int)response.StatusCode);
@@ -172,98 +120,6 @@ public class SubSourceSubtitleProvider : ISubtitleProvider
             cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<int?> FindMovieIdAsync(
-        SubtitleSearchRequest request,
-        bool isEpisode,
-        string apiKey,
-        CancellationToken cancellationToken)
-    {
-        var imdb = GetProviderId(request, "Imdb");
-
-        // For an episode the provider id is the episode's own, and subsource wants the series',
-        // so episodes always go through the text search with the series name.
-        if (!isEpisode && !string.IsNullOrWhiteSpace(imdb))
-        {
-            var byImdb = await SearchTitlesAsync(
-                string.Format(CultureInfo.InvariantCulture, "searchType=imdb&imdb={0}", Uri.EscapeDataString(imdb)),
-                apiKey,
-                cancellationToken).ConfigureAwait(false);
-
-            var exact = byImdb.FirstOrDefault();
-            if (exact?.MovieId is not null)
-            {
-                return exact.MovieId;
-            }
-        }
-
-        var title = (isEpisode ? request.SeriesName : request.Name)?.Trim();
-        if (string.IsNullOrWhiteSpace(title))
-        {
-            return null;
-        }
-
-        var query = string.Format(
-            CultureInfo.InvariantCulture,
-            "searchType=text&q={0}",
-            Uri.EscapeDataString(title.ToLowerInvariant()));
-
-        if (isEpisode && request.ParentIndexNumber is not null)
-        {
-            query += string.Format(CultureInfo.InvariantCulture, "&season={0}", request.ParentIndexNumber);
-        }
-
-        var results = await SearchTitlesAsync(query, apiKey, cancellationToken).ConfigureAwait(false);
-
-        // A text search can return a different film with a similar name, and the wrong film's
-        // subtitles are worse than none, so require the title and year to line up.
-        var wanted = title.ToLowerInvariant();
-        return results.FirstOrDefault(r => Matches(r, wanted, request.ProductionYear))?.MovieId;
-    }
-
-    private static bool Matches(TitleItem item, string wanted, int? year)
-    {
-        if (year is not null && item.ReleaseYear is not null && item.ReleaseYear != year)
-        {
-            return false;
-        }
-
-        var title = item.Title?.ToLowerInvariant();
-        var alternate = item.AlternateTitle?.ToLowerInvariant();
-
-        return (title is not null && title.Contains(wanted, StringComparison.Ordinal))
-            || (alternate is not null && alternate.Contains(wanted, StringComparison.Ordinal));
-    }
-
-    private async Task<List<TitleItem>> SearchTitlesAsync(string query, string apiKey, CancellationToken cancellationToken)
-    {
-        var url = string.Format(
-            CultureInfo.InvariantCulture,
-            "{0}/movies/search?api_key={1}&{2}",
-            BaseUrl,
-            Uri.EscapeDataString(apiKey),
-            query);
-
-        using var response = await SendAsync(url, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-        {
-            _logger.LogWarning("SubSource: title search failed with {Status}", (int)response.StatusCode);
-            return [];
-        }
-
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-            var payload = await JsonSerializer.DeserializeAsync<TitleSearchResponse>(stream, PluginHttp.JsonOptions, cancellationToken).ConfigureAwait(false);
-            return payload?.Data ?? [];
-        }
-        catch (JsonException ex)
-        {
-            _logger.LogWarning(ex, "SubSource: could not read the title search response");
-            return [];
-        }
-    }
-
     private static string? GetProviderId(SubtitleSearchRequest request, string key)
     {
         foreach (var pair in request.ProviderIds)
@@ -275,55 +131,5 @@ public class SubSourceSubtitleProvider : ISubtitleProvider
         }
 
         return null;
-    }
-
-    private async Task<HttpResponseMessage> SendAsync(string url, CancellationToken cancellationToken)
-    {
-        var client = _httpClientFactory.CreateClient(PluginHttp.ClientName);
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-    }
-
-    private sealed class TitleSearchResponse
-    {
-        [JsonPropertyName("data")]
-        public List<TitleItem>? Data { get; set; }
-    }
-
-    private sealed class TitleItem
-    {
-        [JsonPropertyName("movieId")]
-        public int? MovieId { get; set; }
-
-        [JsonPropertyName("title")]
-        public string? Title { get; set; }
-
-        [JsonPropertyName("alternateTitle")]
-        public string? AlternateTitle { get; set; }
-
-        [JsonPropertyName("releaseYear")]
-        public int? ReleaseYear { get; set; }
-    }
-
-    private sealed class SubtitleListResponse
-    {
-        [JsonPropertyName("success")]
-        public bool? Success { get; set; }
-
-        [JsonPropertyName("data")]
-        public List<SubtitleItem>? Data { get; set; }
-    }
-
-    private sealed class SubtitleItem
-    {
-        // subsource returns this as a JSON number, not a string.
-        [JsonPropertyName("subtitleId")]
-        public long? SubtitleId { get; set; }
-
-        [JsonPropertyName("releaseInfo")]
-        public List<string>? ReleaseInfo { get; set; }
-
-        [JsonPropertyName("foreignParts")]
-        public bool? ForeignParts { get; set; }
     }
 }

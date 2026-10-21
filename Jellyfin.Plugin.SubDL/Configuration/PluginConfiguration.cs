@@ -22,4 +22,10 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets where orphaned subtitle files are moved to.
     /// </summary>
     public string ArchivePath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets how many subtitles the scheduled task keeps per movie. 0 turns the movie
+    /// task off and leaves movies to the regular providers.
+    /// </summary>
+    public int SubtitlesPerMovie { get; set; }
 }

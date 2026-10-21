@@ -30,4 +30,23 @@ internal static class PluginHttp
         request.Headers.Add("Authorization", "Bearer " + apiKey);
         return request;
     }
+
+    /// <summary>
+    /// Reads the start of a response body for a log line, without ever throwing.
+    /// </summary>
+    /// <param name="response">The response.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>At most 300 characters of the body.</returns>
+    public static async Task<string> SafeBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            return body.Length > 300 ? body[..300] : body;
+        }
+        catch (Exception)
+        {
+            return "<unreadable>";
+        }
+    }
 }
