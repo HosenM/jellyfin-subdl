@@ -96,4 +96,33 @@ public class SubtitleNamingTests
     [Fact]
     public void TryGetUploader_AcceptsUpperCase()
         => Assert.True(SubtitleNaming.TryGetUploader("Movie.2024", "MOVIE.2024.T - U.FA.SRT", out _));
+
+    [Fact]
+    public void FitsFileSystem_AcceptsExactly255Bytes()
+        => Assert.True(SubtitleNaming.FitsFileSystem(new string('a', 255)));
+
+    [Fact]
+    public void FitsFileSystem_Rejects256Bytes()
+        => Assert.False(SubtitleNaming.FitsFileSystem(new string('a', 256)));
+
+    [Fact]
+    public void FitsFileSystem_CountsPersianAsTwoBytes()
+    {
+        // 128 Persian letters are 128 characters but 256 UTF-8 bytes.
+        Assert.False(SubtitleNaming.FitsFileSystem(new string('ف', 128)));
+        Assert.True(SubtitleNaming.FitsFileSystem(new string('ف', 127)));
+    }
+
+    [Fact]
+    public void FitsFileSystem_RejectsNameBuiltForAVeryLongVideoName()
+    {
+        // The builder shortens title and uploader only, so a 240-byte stem still overflows.
+        var name = SubtitleNaming.BuildFileName(new string('s', 240), "Title", "Uploader", "srt");
+        Assert.False(SubtitleNaming.FitsFileSystem(name));
+    }
+
+    [Fact]
+    public void FitsFileSystem_AcceptsNormalName()
+        => Assert.True(SubtitleNaming.FitsFileSystem(
+            SubtitleNaming.BuildFileName("Anora.2024.2160p.AMZN.WEB-DL", new string('x', 400), "Ali Rezaei", "srt")));
 }

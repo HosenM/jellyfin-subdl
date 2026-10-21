@@ -12,6 +12,9 @@ internal static class SubtitleNaming
     /// <summary>Longest file name we create, in UTF-8 bytes (Linux limits names to 255 bytes and Persian is 2 bytes per letter).</summary>
     public const int MaxFileNameLength = 200;
 
+    /// <summary>Longest file name most file systems accept, in UTF-8 bytes (ext4, XFS, Btrfs and NTFS all stop near 255).</summary>
+    public const int FileSystemNameLimit = 255;
+
     private const string Separator = " - ";
     private const string FallbackTitle = "SubDL";
     private const string FallbackUploader = "Unknown";
@@ -147,6 +150,14 @@ internal static class SubtitleNaming
         uploader = middle[(at + Separator.Length)..];
         return true;
     }
+
+    /// <summary>
+    /// Tells whether a file name is short enough to create. <see cref="BuildFileName"/> only
+    /// shortens the title and uploader, so a very long video name can still push it past the limit.
+    /// </summary>
+    /// <param name="fileName">The file name, without a folder.</param>
+    /// <returns>True when the name is at most <see cref="FileSystemNameLimit"/> UTF-8 bytes.</returns>
+    public static bool FitsFileSystem(string fileName) => Utf8(fileName) <= FileSystemNameLimit;
 
     private static int Utf8(string value) => Encoding.UTF8.GetByteCount(value);
 

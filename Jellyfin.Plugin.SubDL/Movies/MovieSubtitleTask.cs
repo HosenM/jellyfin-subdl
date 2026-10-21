@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Enums;
@@ -5,6 +6,7 @@ using Jellyfin.Plugin.SubDL.Providers;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Providers;
+using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.IO;
 using MediaBrowser.Model.Tasks;
@@ -22,6 +24,10 @@ public class MovieSubtitleTask : IScheduledTask
     private const double PerfectMatchScore = 0.8;
 
     private const string SubSourceUploader = "SubSource";
+
+    // Every format SubtitleHelpers.ExtractAsync can return (srt, ass, ssa, vtt) is three ASCII
+    // letters, so a name built with this one has the same length as the final name.
+    private const string LengthProbeFormat = "srt";
 
     private readonly ILibraryManager _libraryManager;
     private readonly IMediaSourceManager _mediaSourceManager;
@@ -96,7 +102,11 @@ public class MovieSubtitleTask : IScheduledTask
             return;
         }
 
-        var record = SearchRecord.Load(Path.Combine(plugin.DataFolderPath, "finished-movies.json"));
+        // Kept beside the plugin's settings file rather than in its data folder, which sits inside
+        // the plugins directory the plugin manager scans and replaces on upgrade.
+        var record = SearchRecord.Load(Path.Combine(
+            Path.GetDirectoryName(plugin.ConfigurationFilePath)!,
+            "SubDL.finished-movies.json"));
 
         var items = _libraryManager.GetItemList(new InternalItemsQuery
         {
@@ -184,8 +194,18 @@ public class MovieSubtitleTask : IScheduledTask
             return true;
         }
 
+        var streams = _mediaSourceManager.GetMediaStreams(movie.Id);
+
+        // A movie the scan has added but not yet probed has no streams at all, so an embedded
+        // Persian subtitle would go unseen. Leave it unfinished for a later run.
+        if (!streams.Any(s => s.Type == MediaStreamType.Video))
+        {
+            _logger.LogDebug("SubDL: {Movie} has not been probed yet, skipping for now", movie.Name);
+            return true;
+        }
+
         var stem = Stem(movie);
-        var foreign = _mediaSourceManager.GetMediaStreams(movie.Id)
+        var foreign = streams
             .FirstOrDefault(s => s.Type == MediaStreamType.Subtitle
                 && SubtitleHelpers.IsPersianCode(s.Language)
                 && !IsOurs(s, stem));
@@ -210,18 +230,17 @@ public class MovieSubtitleTask : IScheduledTask
         string? subSourceKey,
         CancellationToken cancellationToken)
     {
-        var stem = Stem(movie);
-        var have = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var stream in _mediaSourceManager.GetMediaStreams(movie.Id))
+        var options = _libraryManager.GetLibraryOptions(movie);
+
+        // Chosen before searching, so a folder we cannot write to never costs a download.
+        var folder = ChooseFolder(movie, options);
+        if (folder is null)
         {
-            if (stream.Type == MediaStreamType.Subtitle
-                && stream.IsExternal
-                && !string.IsNullOrEmpty(stream.Path)
-                && SubtitleNaming.TryGetUploader(stem, Path.GetFileName(stream.Path), out var uploader))
-            {
-                have.Add(SubtitlePicker.UploaderKey(uploader));
-            }
+            return new MovieOutcome(0, Finished: false, QuotaSpent: false);
         }
+
+        var stem = Stem(movie);
+        var have = FindOurUploaders(movie, stem, folder);
 
         var wanted = perMovie - have.Count;
         if (wanted <= 0)
@@ -249,23 +268,27 @@ public class MovieSubtitleTask : IScheduledTask
             return new MovieOutcome(0, Finished: false, QuotaSpent: false);
         }
 
-        var options = _libraryManager.GetLibraryOptions(movie);
-        var folder = options.SaveSubtitlesWithMedia ? movie.ContainingFolderPath : movie.GetInternalMetadataPath();
+        var candidates = results
+            .Where(r => !options.RequirePerfectSubtitleMatch || r.MatchScore >= PerfectMatchScore)
+            .Select(r => new SubtitleCandidate(r.NId, r.ReleaseName ?? "SubDL", r.Author, r.MatchScore))
+            .ToList();
 
-        if (results.Count == 0)
+        // Nothing usable from subdl, whether it had no results or the perfect-match filter
+        // removed them all: SubSource is the backup either way.
+        if (candidates.Count == 0)
         {
             if (string.IsNullOrWhiteSpace(subSourceKey))
             {
-                _logger.LogInformation("SubDL: no Persian subtitles for {Movie}", movie.Name);
+                _logger.LogInformation(
+                    "SubDL: no Persian subtitles for {Movie}{Filtered}",
+                    movie.Name,
+                    results.Count > 0 ? " that pass the perfect-match filter" : string.Empty);
                 return new MovieOutcome(0, Finished: true, QuotaSpent: false);
             }
 
             return await FromSubSourceAsync(movie, stem, folder, have, wanted, subSourceKey, cancellationToken).ConfigureAwait(false);
         }
 
-        var candidates = results
-            .Where(r => !options.RequirePerfectSubtitleMatch || r.MatchScore >= PerfectMatchScore)
-            .Select(r => new SubtitleCandidate(r.NId, r.ReleaseName ?? "SubDL", r.Author, r.MatchScore));
         var picks = SubtitlePicker.Pick(candidates, have, wanted);
 
         _logger.LogInformation(
@@ -276,8 +299,15 @@ public class MovieSubtitleTask : IScheduledTask
 
         var count = 0;
         var writeFailed = false;
+        var downloadFailed = false;
         foreach (var pick in picks)
         {
+            var uploader = pick.Uploader ?? string.Empty;
+            if (!NameFits(movie, stem, pick.Title, uploader, "SubDL"))
+            {
+                continue;
+            }
+
             if (!await _subdl.HasDownloadQuotaAsync(apiKey, cancellationToken).ConfigureAwait(false))
             {
                 _logger.LogWarning("SubDL: daily download quota is spent, stopping until the next run");
@@ -292,6 +322,7 @@ public class MovieSubtitleTask : IScheduledTask
             catch (Exception ex) when (IsNetworkFailure(ex, cancellationToken))
             {
                 _logger.LogWarning(ex, "SubDL: download {Id} for {Movie} failed", pick.Id, movie.Name);
+                downloadFailed = true;
                 continue;
             }
 
@@ -303,19 +334,31 @@ public class MovieSubtitleTask : IScheduledTask
                     pick.Id,
                     movie.Name,
                     (int)response.StatusCode);
+                downloadFailed = true;
+
+                // A refused download may mean the quota ran out sooner than the cached count
+                // says, so ask subdl again rather than refusing every remaining pick.
+                _subdl.ExpireQuotaCache();
+                if (!await _subdl.HasDownloadQuotaAsync(apiKey, cancellationToken).ConfigureAwait(false))
+                {
+                    _logger.LogWarning("SubDL: daily download quota is spent, stopping until the next run");
+                    return new MovieOutcome(count, Finished: false, QuotaSpent: true);
+                }
+
                 continue;
             }
 
             _subdl.NoteDownloadUsed();
 
-            var saved = await SaveAsync(response, movie, stem, folder, pick.Title, pick.Uploader ?? string.Empty, "SubDL", cancellationToken).ConfigureAwait(false);
+            var saved = await SaveAsync(response, movie, stem, folder, pick.Title, uploader, "SubDL", cancellationToken).ConfigureAwait(false);
             count += saved == SaveResult.Written ? 1 : 0;
             writeFailed |= saved == SaveResult.WriteFailed;
+            downloadFailed |= saved == SaveResult.DownloadFailed;
         }
 
-        // A failed write (read-only mount, path too long) is not the sources' fault, so the
-        // movie stays unfinished and is tried again once the folder is writable.
-        return new MovieOutcome(count, Finished: !writeFailed, QuotaSpent: false);
+        // A failed write or download is not the sources running dry, so the movie stays
+        // unfinished and the next run tries the missing uploaders again.
+        return new MovieOutcome(count, Finished: !writeFailed && !downloadFailed, QuotaSpent: false);
     }
 
     private async Task<MovieOutcome> FromSubSourceAsync(
@@ -337,7 +380,7 @@ public class MovieSubtitleTask : IScheduledTask
             }
         }
 
-        IReadOnlyList<SubSourceResult> results;
+        IReadOnlyList<SubSourceResult>? results;
         try
         {
             results = await _subSource.SearchAsync(imdb, movie.Name, movie.ProductionYear, false, null, null, apiKey, cancellationToken)
@@ -345,8 +388,13 @@ public class MovieSubtitleTask : IScheduledTask
         }
         catch (Exception ex) when (IsNetworkFailure(ex, cancellationToken))
         {
-            // Same as a failed subdl search: try this movie again next run.
             _logger.LogWarning(ex, "SubSource: search for {Movie} failed", movie.Name);
+            results = null;
+        }
+
+        if (results is null)
+        {
+            // Same as a failed subdl search: try this movie again next run.
             return new MovieOutcome(0, Finished: false, QuotaSpent: false);
         }
 
@@ -379,8 +427,15 @@ public class MovieSubtitleTask : IScheduledTask
 
         var count = 0;
         var writeFailed = false;
+        var downloadFailed = false;
         foreach (var pick in picks)
         {
+            var uploader = pick.Uploader ?? SubSourceUploader;
+            if (!NameFits(movie, stem, pick.Title, uploader, "SubSource"))
+            {
+                continue;
+            }
+
             HttpResponseMessage download;
             try
             {
@@ -389,6 +444,7 @@ public class MovieSubtitleTask : IScheduledTask
             catch (Exception ex) when (IsNetworkFailure(ex, cancellationToken))
             {
                 _logger.LogWarning(ex, "SubSource: download {Id} for {Movie} failed", pick.Id, movie.Name);
+                downloadFailed = true;
                 continue;
             }
 
@@ -400,15 +456,157 @@ public class MovieSubtitleTask : IScheduledTask
                     pick.Id,
                     movie.Name,
                     (int)response.StatusCode);
+                downloadFailed = true;
                 continue;
             }
 
-            var saved = await SaveAsync(response, movie, stem, folder, pick.Title, pick.Uploader ?? SubSourceUploader, "SubSource", cancellationToken).ConfigureAwait(false);
+            var saved = await SaveAsync(response, movie, stem, folder, pick.Title, uploader, "SubSource", cancellationToken).ConfigureAwait(false);
             count += saved == SaveResult.Written ? 1 : 0;
             writeFailed |= saved == SaveResult.WriteFailed;
+            downloadFailed |= saved == SaveResult.DownloadFailed;
         }
 
-        return new MovieOutcome(count, Finished: !writeFailed, QuotaSpent: false);
+        return new MovieOutcome(count, Finished: !writeFailed && !downloadFailed, QuotaSpent: false);
+    }
+
+    /// <summary>
+    /// Picks the folder the movie's subtitles go to: beside the video when the library saves
+    /// subtitles with media and that folder is writable, otherwise the item's metadata folder
+    /// (a read-only media mount still gets its subtitles that way).
+    /// </summary>
+    /// <returns>The folder, or null when neither can be written to.</returns>
+    private string? ChooseFolder(Video movie, LibraryOptions options)
+    {
+        if (options.SaveSubtitlesWithMedia && !string.IsNullOrEmpty(movie.ContainingFolderPath))
+        {
+            if (IsWritable(movie.ContainingFolderPath))
+            {
+                return movie.ContainingFolderPath;
+            }
+
+            _logger.LogInformation(
+                "SubDL: {Folder} is not writable, saving subtitles for {Movie} in the metadata folder instead",
+                movie.ContainingFolderPath,
+                movie.Name);
+        }
+
+        var metadata = movie.GetInternalMetadataPath();
+        if (!string.IsNullOrEmpty(metadata))
+        {
+            try
+            {
+                Directory.CreateDirectory(metadata);
+                if (IsWritable(metadata))
+                {
+                    return metadata;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _logger.LogDebug(ex, "SubDL: could not create {Folder}", metadata);
+            }
+        }
+
+        // Searching now would spend downloads on files that cannot be saved; the movie stays
+        // unfinished and is tried again once a folder is writable.
+        _logger.LogWarning("SubDL: no writable folder for {Movie}'s subtitles, skipping it for now", movie.Name);
+        return null;
+    }
+
+    /// <summary>
+    /// Tells whether a file can be created in a folder by creating and removing a uniquely
+    /// named probe file. Permission bits alone miss read-only mounts.
+    /// </summary>
+    private bool IsWritable(string folder)
+    {
+        if (!Directory.Exists(folder))
+        {
+            return false;
+        }
+
+        var probe = Path.Combine(
+            folder,
+            ".subdl-write-probe-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture) + ".tmp");
+        try
+        {
+            using (new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug(ex, "SubDL: {Folder} is not writable", folder);
+            return false;
+        }
+
+        try
+        {
+            File.Delete(probe);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "SubDL: could not remove the probe file {File}", probe);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Collects the uploaders the movie already has a file from: those Jellyfin knows about, and
+    /// those on disk in the save folder that a refresh has not picked up yet.
+    /// </summary>
+    private HashSet<string> FindOurUploaders(Video movie, string stem, string folder)
+    {
+        var have = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var stream in _mediaSourceManager.GetMediaStreams(movie.Id))
+        {
+            if (stream.Type == MediaStreamType.Subtitle
+                && stream.IsExternal
+                && !string.IsNullOrEmpty(stream.Path)
+                && SubtitleNaming.TryGetUploader(stem, Path.GetFileName(stream.Path), out var uploader))
+            {
+                have.Add(SubtitlePicker.UploaderKey(uploader));
+            }
+        }
+
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(folder))
+            {
+                if (SubtitleNaming.TryGetUploader(stem, Path.GetFileName(path), out var uploader))
+                {
+                    have.Add(SubtitlePicker.UploaderKey(uploader));
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The database streams are still a usable answer; CreateNew guards against duplicates.
+            _logger.LogDebug(ex, "SubDL: could not list {Folder}", folder);
+        }
+
+        return have;
+    }
+
+    /// <summary>
+    /// Checks a pick's file name before it is downloaded. The name builder only shortens the
+    /// title and uploader, so a very long video name can still exceed what the file system takes,
+    /// and downloading it would spend quota on a file that can never be written.
+    /// </summary>
+    private bool NameFits(Video movie, string stem, string title, string uploader, string source)
+    {
+        var name = SubtitleNaming.BuildFileName(stem, title, uploader, LengthProbeFormat);
+        if (SubtitleNaming.FitsFileSystem(name))
+        {
+            return true;
+        }
+
+        _logger.LogWarning(
+            "{Source}: the subtitle name for {Movie} would be longer than {Limit} bytes, skipping it (shorten the video file name to fix this)",
+            source,
+            movie.Name,
+            SubtitleNaming.FileSystemNameLimit);
+        return false;
     }
 
     /// <summary>
@@ -420,7 +618,7 @@ public class MovieSubtitleTask : IScheduledTask
             || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested);
 
     /// <summary>Extracts the subtitle from the zip and writes it, never over an existing file.</summary>
-    /// <returns>Whether the file was written, skipped, or could not be written.</returns>
+    /// <returns>Whether the file was written, skipped, or could not be downloaded or written.</returns>
     private async Task<SaveResult> SaveAsync(
         HttpResponseMessage response,
         Video movie,
@@ -437,9 +635,15 @@ public class MovieSubtitleTask : IScheduledTask
             var archive = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             subtitle = await SubtitleHelpers.ExtractAsync(archive, "fa", null, null, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException || IsNetworkFailure(ex, cancellationToken))
+        catch (Exception ex) when (IsNetworkFailure(ex, cancellationToken))
         {
-            // Counts as a failed download: logged and skipped, the movie still finishes.
+            // The connection dropped mid-download; worth trying again next run.
+            _logger.LogWarning(ex, "{Source}: download for {Movie} broke off", source, movie.Name);
+            return SaveResult.DownloadFailed;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException)
+        {
+            // A broken or empty archive will be just as broken next time, so the movie still finishes.
             _logger.LogWarning(ex, "{Source}: could not read the subtitle archive for {Movie}", source, movie.Name);
             return SaveResult.Skipped;
         }
@@ -467,12 +671,12 @@ public class MovieSubtitleTask : IScheduledTask
             }
             catch (IOException) when (!created && File.Exists(path))
             {
-                _logger.LogDebug("SubDL: {File} already exists, skipping", name);
+                _logger.LogDebug("{Source}: {File} already exists, skipping", source, name);
                 return SaveResult.Skipped;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                _logger.LogWarning(ex, "SubDL: could not write {File} for {Movie}", name, movie.Name);
+                _logger.LogWarning(ex, "{Source}: could not write {File} for {Movie}", source, name, movie.Name);
                 return SaveResult.WriteFailed;
             }
             finally
@@ -483,7 +687,7 @@ public class MovieSubtitleTask : IScheduledTask
                 }
             }
 
-            _logger.LogInformation("SubDL: saved {File} for {Movie}", name, movie.Name);
+            _logger.LogInformation("{Source}: saved {File} for {Movie}", source, name, movie.Name);
             return SaveResult.Written;
         }
     }
@@ -503,7 +707,6 @@ public class MovieSubtitleTask : IScheduledTask
             _logger.LogWarning(ex, "SubDL: could not remove the partly written {File}", path);
         }
     }
-
 
     private void MarkFinished(SearchRecord record, Video movie)
     {
@@ -529,6 +732,9 @@ public class MovieSubtitleTask : IScheduledTask
         Skipped,
 
         /// <summary>The file could not be written, so the movie should be tried again.</summary>
-        WriteFailed
+        WriteFailed,
+
+        /// <summary>The download broke off, so the movie should be tried again.</summary>
+        DownloadFailed
     }
 }

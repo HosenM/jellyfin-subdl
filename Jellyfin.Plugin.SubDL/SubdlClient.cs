@@ -150,6 +150,15 @@ public sealed class SubdlClient
     }
 
     /// <summary>
+    /// Forgets the cached quota so the next <see cref="HasDownloadQuotaAsync"/> asks subdl again.
+    /// Used after a refused download, which may mean the quota ran out sooner than the cache knows.
+    /// </summary>
+    public void ExpireQuotaCache()
+    {
+        _downloadsCheckedAt = DateTime.MinValue;
+    }
+
+    /// <summary>
     /// Requests the zip for a subtitle. The caller checks the status and disposes the response.
     /// </summary>
     /// <param name="nId">The subdl subtitle id.</param>

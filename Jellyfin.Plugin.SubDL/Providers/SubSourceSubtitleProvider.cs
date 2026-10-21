@@ -68,7 +68,8 @@ public class SubSourceSubtitleProvider : ISubtitleProvider
 
         var language = string.IsNullOrWhiteSpace(request.Language) ? "fa" : request.Language;
 
-        var found = results
+        // A failed call and no match look the same to Jellyfin: nothing from this provider.
+        var found = (results ?? [])
             .Select(i => new RemoteSubtitleInfo
             {
                 Id = SubtitleHelpers.BuildId(i.Id, language, season, episode),

@@ -48,8 +48,11 @@ public sealed class SubSourceClient
     /// <param name="episode">Episode number, if known.</param>
     /// <param name="apiKey">The SubSource API key.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The results; empty when there is no match or a call failed.</returns>
-    public async Task<IReadOnlyList<SubSourceResult>> SearchAsync(
+    /// <returns>
+    /// The results; empty when there is no title match or no subtitles, and null when a call
+    /// failed, so a caller can tell "nothing there" from "could not ask".
+    /// </returns>
+    public async Task<IReadOnlyList<SubSourceResult>?> SearchAsync(
         string? imdbId,
         string? title,
         int? year,
@@ -59,7 +62,12 @@ public sealed class SubSourceClient
         string apiKey,
         CancellationToken cancellationToken)
     {
-        var movieId = await FindMovieIdAsync(imdbId, title, year, isEpisode, season, apiKey, cancellationToken).ConfigureAwait(false);
+        var (movieId, lookupFailed) = await FindMovieIdAsync(imdbId, title, year, isEpisode, season, apiKey, cancellationToken).ConfigureAwait(false);
+        if (lookupFailed)
+        {
+            return null;
+        }
+
         if (movieId is null)
         {
             _logger.LogInformation("SubSource: no title match for {Name}", title);
@@ -94,7 +102,7 @@ public sealed class SubSourceClient
                 "SubSource: subtitle list for {Name} failed with {Status}",
                 title,
                 (int)response.StatusCode);
-            return [];
+            return null;
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -152,7 +160,8 @@ public sealed class SubSourceClient
             || (alternate is not null && alternate.Contains(wanted, StringComparison.Ordinal));
     }
 
-    private async Task<int?> FindMovieIdAsync(
+    /// <returns>The SubSource movie id, or null with Failed set when a title search call failed.</returns>
+    private async Task<(int? MovieId, bool Failed)> FindMovieIdAsync(
         string? imdb,
         string? rawTitle,
         int? year,
@@ -163,6 +172,7 @@ public sealed class SubSourceClient
     {
         // For an episode the provider id is the episode's own, and subsource wants the series',
         // so episodes always go through the text search with the series name.
+        var imdbFailed = false;
         if (!isEpisode && !string.IsNullOrWhiteSpace(imdb))
         {
             var byImdb = await SearchTitlesAsync(
@@ -170,17 +180,19 @@ public sealed class SubSourceClient
                 apiKey,
                 cancellationToken).ConfigureAwait(false);
 
-            var exact = byImdb.FirstOrDefault();
+            imdbFailed = byImdb is null;
+            var exact = byImdb?.FirstOrDefault();
             if (exact?.MovieId is not null)
             {
-                return exact.MovieId;
+                return (exact.MovieId, false);
             }
         }
 
         var title = rawTitle?.Trim();
         if (string.IsNullOrWhiteSpace(title))
         {
-            return null;
+            // Without a title to fall back on, a failed IMDb lookup leaves the answer unknown.
+            return (null, imdbFailed);
         }
 
         var query = string.Format(
@@ -194,14 +206,23 @@ public sealed class SubSourceClient
         }
 
         var results = await SearchTitlesAsync(query, apiKey, cancellationToken).ConfigureAwait(false);
+        if (results is null)
+        {
+            return (null, true);
+        }
 
         // A text search can return a different film with a similar name, and the wrong film's
         // subtitles are worse than none, so require the title and year to line up.
         var wanted = title.ToLowerInvariant();
-        return results.FirstOrDefault(r => Matches(r, wanted, year))?.MovieId;
+        var movieId = results.FirstOrDefault(r => Matches(r, wanted, year))?.MovieId;
+
+        // No text match after a failed IMDb lookup is not a real "no match": the IMDb id might
+        // have found it.
+        return (movieId, movieId is null && imdbFailed);
     }
 
-    private async Task<List<TitleItem>> SearchTitlesAsync(string query, string apiKey, CancellationToken cancellationToken)
+    /// <returns>The titles found, or null when the call failed.</returns>
+    private async Task<List<TitleItem>?> SearchTitlesAsync(string query, string apiKey, CancellationToken cancellationToken)
     {
         var url = string.Format(
             CultureInfo.InvariantCulture,
@@ -214,7 +235,7 @@ public sealed class SubSourceClient
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("SubSource: title search failed with {Status}", (int)response.StatusCode);
-            return [];
+            return null;
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -227,7 +248,7 @@ public sealed class SubSourceClient
         catch (JsonException ex)
         {
             _logger.LogWarning(ex, "SubSource: could not read the title search response");
-            return [];
+            return null;
         }
     }
 
