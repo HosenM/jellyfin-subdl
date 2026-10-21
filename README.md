@@ -94,7 +94,11 @@ Anora.2024.2160p.AMZN.WEB-DL.Anora 2024 1080p BluRay - Ali Rezaei.fa.srt
 ```
 
 Existing files are never overwritten. Where the files go follows the library's *Save subtitles with
-media* option.
+media* option. If the media folder is read-only (a Docker `/media:ro` mount, say), the subtitles go
+to Jellyfin's metadata folder for the movie instead.
+
+The list of finished movies is kept in Jellyfin's plugin configurations folder, in
+`SubDL.finished-movies.json`. Delete that file to make every movie a candidate again.
 
 Persian **stays** in the library's subtitle download languages, because series still use Jellyfin's
 *Download missing subtitles* task. To keep that task from saving a plain `Movie.fa.srt` first, the
