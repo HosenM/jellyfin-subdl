@@ -50,4 +50,50 @@ public class SubtitleNamingTests
     [InlineData("Movie.2024.T - U.fa.txt")]      // not a subtitle
     public void TryGetUploader_RejectsFilesThatAreNotOurs(string file)
         => Assert.False(SubtitleNaming.TryGetUploader("Movie.2024", file, out _));
+
+    [Theory]
+    [InlineData("A - - B", "A B")]
+    [InlineData("- B", "B")]
+    [InlineData("A -", "A")]
+    [InlineData("A-B", "A-B")]
+    public void Clean_LeavesNoSeparator(string input, string expected)
+    {
+        Assert.Equal(expected, SubtitleNaming.Clean(input));
+        Assert.DoesNotContain(" - ", SubtitleNaming.Clean(input));
+    }
+
+    [Fact]
+    public void TryGetUploader_RoundTripsUploaderWithRepeatedSeparator()
+    {
+        var name = SubtitleNaming.BuildFileName("Movie.2024", "T", "A - - B", "srt");
+        Assert.True(SubtitleNaming.TryGetUploader("Movie.2024", name, out var uploader));
+        Assert.Equal("A B", uploader);
+    }
+
+    [Fact]
+    public void BuildFileName_PersianUploaderStaysWithinByteLimit()
+    {
+        var name = SubtitleNaming.BuildFileName("Movie.2024", "Title", new string('ف', 150), "srt");
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(name) <= SubtitleNaming.MaxFileNameLength);
+        Assert.EndsWith(".fa.srt", name);
+        Assert.True(SubtitleNaming.TryGetUploader("Movie.2024", name, out var uploader));
+        Assert.NotEmpty(uploader);
+    }
+
+    [Fact]
+    public void BuildFileName_DoesNotSplitSurrogatePair()
+    {
+        var name = SubtitleNaming.BuildFileName("S", string.Concat(Enumerable.Repeat("😀", 100)), "U", "srt");
+        Assert.True(System.Text.Encoding.UTF8.GetByteCount(name) <= SubtitleNaming.MaxFileNameLength);
+        Assert.DoesNotContain('�', name);
+        Assert.Equal(name, System.Text.Encoding.UTF8.GetString(System.Text.Encoding.UTF8.GetBytes(name)));
+    }
+
+    [Fact]
+    public void BuildFileName_EmptyTitleBecomesSubDL()
+        => Assert.Equal("S.SubDL - U.fa.srt", SubtitleNaming.BuildFileName("S", "...", "U", "srt"));
+
+    [Fact]
+    public void TryGetUploader_AcceptsUpperCase()
+        => Assert.True(SubtitleNaming.TryGetUploader("Movie.2024", "MOVIE.2024.T - U.FA.SRT", out _));
 }

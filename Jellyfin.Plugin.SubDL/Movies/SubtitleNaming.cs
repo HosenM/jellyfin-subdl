@@ -9,7 +9,7 @@ namespace Jellyfin.Plugin.SubDL.Movies;
 /// </summary>
 internal static class SubtitleNaming
 {
-    /// <summary>Longest file name we create, kept well under common file system limits.</summary>
+    /// <summary>Longest file name we create, in UTF-8 bytes (Linux limits names to 255 bytes and Persian is 2 bytes per letter).</summary>
     public const int MaxFileNameLength = 200;
 
     private const string Separator = " - ";
@@ -20,6 +20,9 @@ internal static class SubtitleNaming
 
     private static readonly char[] InvalidChars =
         Path.GetInvalidFileNameChars().Concat("<>:\"/\\|?*").Distinct().ToArray();
+
+    // A hyphen standing alone between whitespace or the string ends: what would form " - " once spaces are collapsed.
+    private static readonly Regex LoneHyphen = new(@"(?<!\S)-(?!\S)", RegexOptions.Compiled);
 
     private static readonly Regex Whitespace = new(@"\s+", RegexOptions.Compiled);
 
@@ -50,7 +53,9 @@ internal static class SubtitleNaming
             }
         }
 
-        var text = builder.ToString().Replace(Separator, " ", StringComparison.Ordinal);
+        // Removing every stand-alone hyphen (not just " - ") guarantees no separator survives,
+        // even for input like "A - - B", which a single Replace pass would leave as "A - B".
+        var text = LoneHyphen.Replace(builder.ToString(), " ");
         return Whitespace.Replace(text, " ").Trim();
     }
 
@@ -73,11 +78,14 @@ internal static class SubtitleNaming
         }
 
         var extension = format.ToLowerInvariant();
-        var tail = Separator + cleanUploader + ".fa." + extension;
-        var room = MaxFileNameLength - videoStem.Length - 1 - tail.Length;
-        if (cleanTitle.Length > room)
+        const string suffixAfterUploader = ".fa.";
+        var fixedBytes = Utf8(videoStem) + 1 + Separator.Length + suffixAfterUploader.Length + Utf8(extension);
+
+        // Shorten the title first, then the uploader if the stem and uploader alone are too long.
+        var titleRoom = MaxFileNameLength - fixedBytes - Utf8(cleanUploader);
+        if (Utf8(cleanTitle) > titleRoom)
         {
-            cleanTitle = cleanTitle[..Math.Max(room, 0)].TrimEnd();
+            cleanTitle = TruncateToBytes(cleanTitle, Math.Max(titleRoom, 0));
         }
 
         if (cleanTitle.Length == 0)
@@ -85,6 +93,17 @@ internal static class SubtitleNaming
             cleanTitle = FallbackTitle;
         }
 
+        var uploaderRoom = MaxFileNameLength - fixedBytes - Utf8(cleanTitle);
+        if (Utf8(cleanUploader) > uploaderRoom)
+        {
+            cleanUploader = TruncateToBytes(cleanUploader, Math.Max(uploaderRoom, 0));
+            if (cleanUploader.Length == 0)
+            {
+                cleanUploader = FallbackUploader;
+            }
+        }
+
+        var tail = Separator + cleanUploader + suffixAfterUploader + extension;
         return videoStem + "." + cleanTitle + tail;
     }
 
@@ -127,5 +146,28 @@ internal static class SubtitleNaming
 
         uploader = middle[(at + Separator.Length)..];
         return true;
+    }
+
+    private static int Utf8(string value) => Encoding.UTF8.GetByteCount(value);
+
+    /// <summary>Cuts to at most <paramref name="maxBytes"/> UTF-8 bytes without splitting a surrogate pair.</summary>
+    private static string TruncateToBytes(string value, int maxBytes)
+    {
+        var length = 0;
+        var bytes = 0;
+        while (length < value.Length)
+        {
+            var step = char.IsHighSurrogate(value[length]) && length + 1 < value.Length ? 2 : 1;
+            var stepBytes = Encoding.UTF8.GetByteCount(value.AsSpan(length, step));
+            if (bytes + stepBytes > maxBytes)
+            {
+                break;
+            }
+
+            bytes += stepBytes;
+            length += step;
+        }
+
+        return value[..length].TrimEnd();
     }
 }
