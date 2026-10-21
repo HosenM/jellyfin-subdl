@@ -25,6 +25,10 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         });
 
+        // The providers and the scheduled movie task share these, so the subdl quota cache is shared too.
+        serviceCollection.AddSingleton<SubdlClient>();
+        serviceCollection.AddSingleton<SubSourceClient>();
+
         // Jellyfin asks providers in SubtitleFetcherOrder and stops at the first that returns
         // results, so SubDL first with SubSource second gives fallback without extra logic.
         serviceCollection.AddSingleton<ISubtitleProvider, SubdlSubtitleProvider>();

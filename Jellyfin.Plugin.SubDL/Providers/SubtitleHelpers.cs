@@ -106,6 +106,16 @@ internal static class SubtitleHelpers
                 || value.Contains("persian", StringComparison.OrdinalIgnoreCase)
                 || value.Contains("farsi", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// Checks whether a search should be left to the scheduled movie task. When the movie
+    /// task is on, movies get several subtitles from it, so the providers stay out of the way.
+    /// </summary>
+    /// <param name="contentType">Kind of video searched for.</param>
+    /// <param name="subtitlesPerMovie">The configured number of subtitles per movie, 0 for off.</param>
+    /// <returns>True when the movie task handles this search.</returns>
+    public static bool IsLeftToMovieTask(VideoContentType contentType, int subtitlesPerMovie)
+        => contentType == VideoContentType.Movie && subtitlesPerMovie > 0;
+
     private static ZipArchiveEntry PickEntry(IReadOnlyList<ZipArchiveEntry> entries, int? season, int? episode)
     {
         var files = entries.Where(e => e.Length > 0 && IsSubtitleFile(e.Name)).ToArray();
